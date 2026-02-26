@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
-import { VCDData, VCDSignal, DecodedEvent } from '../utils/vcd';
+import { VCDData, VCDSignal, DecodedEvent, binToHex } from '../utils/vcd';
 
 interface WaveformProps {
   data: VCDData;
@@ -102,6 +102,8 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
         const signal = data.signals.get(sigName);
         if (!signal) return;
 
+        const [xMin, xMax] = currentX.domain();
+
         // Signal Label
         waveG.append('text')
           .attr('x', -10)
@@ -111,10 +113,53 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
           .attr('fill', labelColor)
           .style('font-size', '11px')
           .style('font-family', 'var(--font-mono)')
-          .text(sigName);
+          .text(signal.name.split('.').pop() || signal.name);
+
+        if (signal.size > 1) {
+          // Render as bus
+          const transitionTimes = new Set<number>();
+          signal.values.forEach(v => transitionTimes.add(v.time));
+          const sortedTimes = Array.from(transitionTimes).sort((a, b) => a - b);
+          const visibleTimes = [xMin, ...sortedTimes.filter(t => t > xMin && t < xMax), xMax];
+
+          for (let i = 0; i < visibleTimes.length - 1; i++) {
+            const tStart = visibleTimes[i];
+            const tEnd = visibleTimes[i+1];
+            const xStart = currentX(tStart);
+            const xEnd = currentX(tEnd);
+            const rectWidth = xEnd - xStart;
+
+            if (rectWidth < 0.5) continue;
+
+            const val = getSignalValueAt(signal, tStart);
+            const hex = binToHex(val);
+
+            const busG = waveG.append('g');
+            busG.append('rect')
+              .attr('x', xStart)
+              .attr('y', y)
+              .attr('width', rectWidth)
+              .attr('height', signalHeight)
+              .attr('fill', '#1a1a1a')
+              .attr('stroke', '#555')
+              .attr('stroke-width', 1);
+
+            if (rectWidth > 30) {
+              busG.append('text')
+                .attr('x', xStart + rectWidth / 2)
+                .attr('y', y + signalHeight / 2)
+                .attr('text-anchor', 'middle')
+                .attr('alignment-baseline', 'middle')
+                .attr('fill', color)
+                .style('font-size', '10px')
+                .style('font-family', 'var(--font-mono)')
+                .text(`0x${hex}`);
+            }
+          }
+          return;
+        }
 
         const points: [number, number][] = [];
-        const [xMin, xMax] = currentX.domain();
         
         let currentVal = '0';
         for (const v of signal.values) {
@@ -181,19 +226,17 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
           if (rectWidth < 0.5) continue;
 
           // Calculate hex value at this time
-          let value = BigInt(0);
-          group.signalNames.forEach((name, bitIdx) => {
+          let binStr = "";
+          group.signalNames.forEach((name) => {
             const sig = data.signals.get(name);
             if (sig) {
-              const bitVal = getSignalValueAt(sig, tStart);
-              if (bitVal === '1') {
-                // Assuming signals are sorted 31 downto 0
-                value |= (BigInt(1) << BigInt(group.signalNames.length - 1 - bitIdx));
-              }
+              binStr += getSignalValueAt(sig, tStart);
+            } else {
+              binStr += 'x';
             }
           });
 
-          const hex = value.toString(16).toUpperCase().padStart(Math.ceil(group.signalNames.length / 4), '0');
+          const hex = binToHex(binStr);
 
           const busG = waveG.append('g');
           

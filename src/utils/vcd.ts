@@ -23,6 +23,7 @@ export function parseVCD(content: string): VCDData {
   let timescale = '1ns';
   let currentTime = 0;
   let maxTime = 0;
+  let scopeStack: string[] = [];
 
   let inHeader = true;
 
@@ -33,15 +34,30 @@ export function parseVCD(content: string): VCDData {
     if (inHeader) {
       if (line.startsWith('$timescale')) {
         timescale = line.split('$timescale')[1].replace('$end', '').trim();
+      } else if (line.startsWith('$scope')) {
+        const parts = line.split(/\s+/);
+        scopeStack.push(parts[2]);
+      } else if (line.startsWith('$upscope')) {
+        scopeStack.pop();
       } else if (line.startsWith('$var')) {
         const parts = line.split(/\s+/);
         // $var wire 1 ! clk $end
+        // $var wire 1 F avs_readdata [31] $end
         const type = parts[1] as 'wire' | 'reg';
         const size = parseInt(parts[2]);
         const id = parts[3];
-        const name = parts[4];
-        const signal: VCDSignal = { id, name, type, size, values: [] };
-        signals.set(name, signal);
+        
+        // Capture full name until $end
+        const nameParts = [];
+        for (let i = 4; i < parts.length; i++) {
+          if (parts[i] === '$end') break;
+          nameParts.push(parts[i]);
+        }
+        const baseName = nameParts.join(' ');
+        const fullName = scopeStack.length > 0 ? `${scopeStack.join('.')}.${baseName}` : baseName;
+        
+        const signal: VCDSignal = { id, name: fullName, type, size, values: [] };
+        signals.set(fullName, signal);
         idToSignal.set(id, signal);
       } else if (line.startsWith('$enddefinitions')) {
         inHeader = false;
@@ -68,6 +84,64 @@ export function parseVCD(content: string): VCDData {
         const sig = idToSignal.get(id);
         if (sig) sig.values.push({ time: currentTime, value });
       }
+    }
+  }
+
+  // Post-process: Detect bit-blasted vectors and merge them
+  const vectorGroups = new Map<string, Map<number, VCDSignal>>();
+  const bitRegex = /(.+?)\s*\[(\d+)\]$/;
+  
+  for (const [name, sig] of signals) {
+    const match = name.match(bitRegex);
+    if (match && sig.size === 1) {
+      const baseName = match[1].trim();
+      const bitIdx = parseInt(match[2]);
+      if (!vectorGroups.has(baseName)) {
+        vectorGroups.set(baseName, new Map());
+      }
+      vectorGroups.get(baseName)!.set(bitIdx, sig);
+    }
+  }
+  
+  for (const [baseName, bits] of vectorGroups) {
+    if (bits.size > 1) {
+      const maxBit = Math.max(...bits.keys());
+      const minBit = Math.min(...bits.keys());
+      const size = maxBit - minBit + 1;
+      
+      // Collect all transition times
+      const allTimes = new Set<number>();
+      bits.forEach(sig => sig.values.forEach(v => allTimes.add(v.time)));
+      const sortedTimes = Array.from(allTimes).sort((a, b) => a - b);
+      
+      const compositeValues: { time: number; value: string }[] = [];
+      
+      sortedTimes.forEach(time => {
+        let valStr = "";
+        for (let i = maxBit; i >= minBit; i--) {
+          const bitSig = bits.get(i);
+          if (bitSig) {
+            valStr += getSignalValueAt(bitSig, time);
+          } else {
+            valStr += 'x';
+          }
+        }
+        compositeValues.push({ time, value: valStr });
+      });
+      
+      const compositeName = `${baseName}[${maxBit}:${minBit}]`;
+      const composite: VCDSignal = {
+        id: `composite_${baseName}`,
+        name: compositeName,
+        type: 'wire',
+        size,
+        values: compositeValues
+      };
+      
+      signals.set(compositeName, composite);
+      
+      // Remove individual bits to declutter
+      bits.forEach(sig => signals.delete(sig.name));
     }
   }
 
@@ -351,11 +425,22 @@ export function decodeAvalon(
   return events;
 }
 
-function binToHex(bin: string): string {
-  if (!bin || bin.match(/[xXzZ]/)) return bin || 'X';
+export function binToHex(bin: string): string {
+  if (!bin) return 'X';
+  
+  // Handle strings with non-binary characters (U, X, Z, W, L, H, -)
+  if (bin.match(/[uUxXzZwWl LhH-]/)) {
+    // If it's all the same character, just return that
+    const uniqueChars = new Set(bin.split(''));
+    if (uniqueChars.size === 1) return bin[0].toUpperCase();
+    // Otherwise, it's a mix, return 'X'
+    return 'X';
+  }
+
   try {
+    // For very long strings, BigInt is necessary
     return BigInt('0b' + bin).toString(16).toUpperCase();
   } catch {
-    return bin;
+    return 'X';
   }
 }

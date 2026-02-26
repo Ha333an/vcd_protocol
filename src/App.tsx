@@ -104,7 +104,7 @@ export default function App() {
     // Regex for common suffixes: _0, [0], 0
     const suffixRegex = /(.+?)(?:_(\d+)|\[(\d+)\]|(\d+))$/;
     
-    allSignals.forEach(sig => {
+    allSignals.forEach((sig: string) => {
       const match = sig.match(suffixRegex);
       if (match) {
         const prefix = match[1];
@@ -118,12 +118,12 @@ export default function App() {
     const newGroups: SignalGroup[] = [];
     const signalsToMove = new Set<string>();
     
-    potentialGroups.forEach((sigs, prefix) => {
+    potentialGroups.forEach((sigs: string[], prefix: string) => {
       if (sigs.length > 1) {
         newGroups.push({
           id: Math.random().toString(36).substr(2, 9),
           name: prefix.replace(/[._\[]$/, ''),
-          signalNames: sigs.sort((a, b) => {
+          signalNames: sigs.sort((a: string, b: string) => {
             // Sort numeric suffixes descending (31 downto 0)
             const aNum = parseInt(a.match(/\d+$/)?.[0] || '0');
             const bNum = parseInt(b.match(/\d+$/)?.[0] || '0');
