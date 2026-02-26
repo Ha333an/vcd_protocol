@@ -1,0 +1,5 @@
+{
+  "name": "VCD Protocol Analyzer",
+  "description": "A high-performance web-based VCD viewer with integrated protocol decoding for UART and SPI.",
+  "requestFramePermissions": []
+}
