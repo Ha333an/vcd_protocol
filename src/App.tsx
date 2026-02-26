@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { Upload, Cpu, Activity, Settings, Plus, Trash2, ChevronRight, FileText } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { parseVCD, VCDData, decodeUART, decodeSPI, decodeAvalon, DecodedEvent } from './utils/vcd';
+import { parseVCD, VCDData, decodeUART, decodeSPI, decodeAvalon, DecodedEvent, calculateSignalFrequency, calculateSignalMeasurements } from './utils/vcd';
 import { WaveformViewer } from './components/WaveformViewer';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -35,6 +35,7 @@ export default function App() {
   const [protocols, setProtocols] = useState<ProtocolConfig[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<{ protocolId: string; index: number } | null>(null);
+  const [selectedSignalName, setSelectedSignalName] = useState<string | null>(null);
 
   const handleFileUpload = useCallback((file: File) => {
     const reader = new FileReader();
@@ -45,6 +46,7 @@ export default function App() {
       setVisibleSignals(Array.from(parsed.signals.keys()).slice(0, 10));
       setGroups([]);
       setSelectedEvent(null);
+      setSelectedSignalName(null);
     };
     reader.readAsText(file);
   }, []);
@@ -478,7 +480,7 @@ export default function App() {
                 <h2 className="text-xs font-bold uppercase tracking-widest font-mono">Visible Signals</h2>
               </div>
               <div className="space-y-1">
-                {Array.from(vcdData.signals.keys()).map(name => (
+                {Array.from(vcdData.signals.keys()).map((name: string) => (
                   <label key={name} className="flex items-center gap-2 p-1 hover:bg-[#222] rounded cursor-pointer group">
                     <input 
                       type="checkbox"
@@ -489,7 +491,14 @@ export default function App() {
                       }}
                       className="accent-[#f27d26]"
                     />
-                    <span className="text-xs font-mono text-gray-400 group-hover:text-white transition-colors">{name}</span>
+                    <div className="flex flex-col">
+                      <span className="text-xs font-mono text-gray-400 group-hover:text-white transition-colors">{name}</span>
+                      {vcdData.signals.get(name) && (name.toLowerCase().includes('clk') || name.toLowerCase().includes('clock')) && (
+                        <span className="text-[9px] text-emerald-500 font-mono opacity-60">
+                          {calculateSignalFrequency(vcdData.signals.get(name)!, vcdData.timescale)}
+                        </span>
+                      )}
+                    </div>
                   </label>
                 ))}
               </div>
@@ -521,13 +530,80 @@ export default function App() {
             </div>
           ) : (
             <div className="space-y-6">
+              {/* Measurement Bar */}
+              <AnimatePresence>
+                {selectedSignalName && vcdData.signals.get(selectedSignalName) && (
+                  <motion.div 
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    className="bg-[#1a1a1a] border border-[#f27d26]/30 rounded-lg p-4 overflow-hidden"
+                  >
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-3">
+                        <Activity size={16} className="text-[#f27d26]" />
+                        <h3 className="text-xs font-bold uppercase tracking-widest font-mono text-white">
+                          Measurements: <span className="text-[#f27d26]">{selectedSignalName}</span>
+                        </h3>
+                      </div>
+                      <button 
+                        onClick={() => setSelectedSignalName(null)}
+                        className="text-gray-500 hover:text-white transition-colors"
+                      >
+                        ×
+                      </button>
+                    </div>
+                    
+                    {(() => {
+                      const signal = vcdData.signals.get(selectedSignalName)!;
+                      const measurements = calculateSignalMeasurements(signal, vcdData.timescale);
+                      
+                      if (measurements) {
+                        return (
+                          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                            {[
+                              { label: 'Frequency', value: measurements.frequency },
+                              { label: 'Period', value: measurements.avgPeriod },
+                              { label: 'Pos Pulse', value: measurements.avgPosPulse },
+                              { label: 'Neg Pulse', value: measurements.avgNegPulse },
+                              { label: 'Duty Cycle', value: measurements.dutyCycle },
+                            ].map(stat => (
+                              <div key={stat.label} className="bg-[#0a0a0a] p-2 rounded border border-[#333]">
+                                <div className="text-[9px] text-gray-500 uppercase font-mono mb-1">{stat.label}</div>
+                                <div className="text-sm font-mono text-emerald-500 font-bold">{stat.value}</div>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      } else if (signal.size > 1) {
+                        return (
+                          <div className="text-xs text-gray-500 font-mono italic flex items-center gap-2">
+                            <Settings size={14} />
+                            Timing measurements are currently only available for single-bit signals (clocks, enables, etc).
+                          </div>
+                        );
+                      } else {
+                        return (
+                          <div className="text-xs text-gray-500 font-mono italic flex items-center gap-2">
+                            <Activity size={14} />
+                            Not enough transitions detected to calculate timing measurements for this signal.
+                          </div>
+                        );
+                      }
+                    })()}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
               <WaveformViewer 
                 data={vcdData} 
                 visibleSignals={visibleSignals}
                 groups={groups}
                 protocolDecoders={decodedProtocols}
                 selectedEvent={selectedEvent}
+                selectedSignalName={selectedSignalName}
                 onSelectEvent={(protocolId, index) => setSelectedEvent({ protocolId, index })}
+                onSelectSignal={setSelectedSignalName}
                 onToggleGroup={toggleGroupCollapse}
               />
 

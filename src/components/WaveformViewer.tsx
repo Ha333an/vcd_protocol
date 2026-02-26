@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
-import { VCDData, VCDSignal, DecodedEvent, binToHex } from '../utils/vcd';
+import { VCDData, VCDSignal, DecodedEvent, binToHex, calculateSignalFrequency } from '../utils/vcd';
 
 interface WaveformProps {
   data: VCDData;
@@ -14,7 +14,9 @@ interface WaveformProps {
     decoded: DecodedEvent[];
   }[];
   selectedEvent: { protocolId: string; index: number } | null;
+  selectedSignalName: string | null;
   onSelectEvent: (protocolId: string, index: number) => void;
+  onSelectSignal: (name: string | null) => void;
   onToggleGroup: (id: string) => void;
 }
 
@@ -24,7 +26,9 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
   groups,
   protocolDecoders,
   selectedEvent,
+  selectedSignalName,
   onSelectEvent,
+  onSelectSignal,
   onToggleGroup
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -103,17 +107,54 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
         if (!signal) return;
 
         const [xMin, xMax] = currentX.domain();
+        const isSelected = selectedSignalName === signal.name;
 
         // Signal Label
-        waveG.append('text')
+        const label = signal.name.split('.').pop() || signal.name;
+        const freq = (label.toLowerCase().includes('clk') || label.toLowerCase().includes('clock')) 
+          ? calculateSignalFrequency(signal, data.timescale) 
+          : null;
+
+        const labelGroup = waveG.append('g')
+          .style('cursor', 'pointer')
+          .on('click', (e) => {
+            e.stopPropagation();
+            onSelectSignal(isSelected ? null : signal.name);
+          });
+
+        const labelText = labelGroup.append('text')
           .attr('x', -10)
           .attr('y', y + signalHeight / 2)
           .attr('text-anchor', 'end')
           .attr('alignment-baseline', 'middle')
-          .attr('fill', labelColor)
+          .attr('fill', isSelected ? '#f27d26' : labelColor)
           .style('font-size', '11px')
           .style('font-family', 'var(--font-mono)')
-          .text(signal.name.split('.').pop() || signal.name);
+          .style('font-weight', isSelected ? 'bold' : 'normal');
+
+        labelText.append('tspan')
+          .text(label);
+
+        if (freq) {
+          labelText.append('tspan')
+            .attr('x', -10)
+            .attr('dy', '1.2em')
+            .attr('fill', isSelected ? '#f27d26' : '#10b981')
+            .style('font-size', '8px')
+            .style('opacity', 0.6)
+            .text(` (${freq})`);
+        }
+
+        if (isSelected) {
+          waveG.append('rect')
+            .attr('x', 0)
+            .attr('y', y - 5)
+            .attr('width', width)
+            .attr('height', signalHeight + 10)
+            .attr('fill', '#f27d26')
+            .attr('fill-opacity', 0.05)
+            .attr('pointer-events', 'none');
+        }
 
         if (signal.size > 1) {
           // Render as bus
@@ -134,15 +175,21 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
             const val = getSignalValueAt(signal, tStart);
             const hex = binToHex(val);
 
-            const busG = waveG.append('g');
+            const busG = waveG.append('g')
+              .style('cursor', 'pointer')
+              .on('click', (e) => {
+                e.stopPropagation();
+                onSelectSignal(isSelected ? null : signal.name);
+              });
+
             busG.append('rect')
               .attr('x', xStart)
               .attr('y', y)
               .attr('width', rectWidth)
               .attr('height', signalHeight)
-              .attr('fill', '#1a1a1a')
-              .attr('stroke', '#555')
-              .attr('stroke-width', 1);
+              .attr('fill', isSelected ? '#2a1a0a' : '#1a1a1a')
+              .attr('stroke', isSelected ? '#f27d26' : '#555')
+              .attr('stroke-width', isSelected ? 1.5 : 1);
 
             if (rectWidth > 30) {
               busG.append('text')
@@ -150,7 +197,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
                 .attr('y', y + signalHeight / 2)
                 .attr('text-anchor', 'middle')
                 .attr('alignment-baseline', 'middle')
-                .attr('fill', color)
+                .attr('fill', isSelected ? '#f27d26' : color)
                 .style('font-size', '10px')
                 .style('font-family', 'var(--font-mono)')
                 .text(`0x${hex}`);
@@ -185,10 +232,15 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
         waveG.append('path')
           .datum(points)
           .attr('fill', 'none')
-          .attr('stroke', color)
-          .attr('stroke-width', 1.5)
+          .attr('stroke', isSelected ? '#f27d26' : color)
+          .attr('stroke-width', isSelected ? 2 : 1.5)
           .attr('stroke-linejoin', 'round')
-          .attr('d', d3.line());
+          .attr('d', d3.line())
+          .style('cursor', 'pointer')
+          .on('click', (e) => {
+            e.stopPropagation();
+            onSelectSignal(isSelected ? null : signal.name);
+          });
       };
 
       const renderBus = (group: { name: string; signalNames: string[] }, y: number) => {
@@ -411,7 +463,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
       svg.on('.zoom', null);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [data, visibleSignals, protocolDecoders, selectedEvent, groups, onToggleGroup, onSelectEvent, zoom]);
+  }, [data, visibleSignals, protocolDecoders, selectedEvent, selectedSignalName, groups, onToggleGroup, onSelectEvent, onSelectSignal, zoom]);
 
   return (
     <div className="w-full bg-[#141414] rounded-lg border border-[#333] p-4">
