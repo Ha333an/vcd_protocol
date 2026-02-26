@@ -1,7 +1,7 @@
 {
   "name": "react-example",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "start": "npm run dev",
@@ -39,6 +39,11 @@
     "@types/vscode": "^1.79.0",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.18.0",
+    "@emnapi/core": "^1.8.1",
+    "@emnapi/runtime": "^1.8.1",
+    "@emnapi/wasi-threads": "^1.1.0",
+    "@napi-rs/wasm-runtime": "^1.1.1",
+    "@tybys/wasm-util": "^0.10.1",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
@@ -59,9 +64,17 @@
   },
   "main": "out/extension.js",
   "activationEvents": [
-    "onCommand:vcdProtocol.openViewer"
+    "onCommand:vcdProtocol.openViewer",
+    "onLanguage:vcd"
   ],
   "contributes": {
+    "languages": [
+      {
+        "id": "vcd",
+        "extensions": [".vcd"],
+        "aliases": ["VCD"]
+      }
+    ],
     "commands": [
       {
         "command": "vcdProtocol.openViewer",

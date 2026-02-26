@@ -38,28 +38,44 @@ export default function App() {
   const [selectedSignalName, setSelectedSignalName] = useState<string | null>(null);
   const [displayUnit, setDisplayUnit] = useState<string>('ns');
 
+  const loadVcdContent = useCallback((content: string) => {
+    const parsed = parseVCD(content);
+    setVcdData(parsed);
+    setVisibleSignals(Array.from(parsed.signals.keys()).slice(0, 10));
+
+    // Auto-detect a sensible display unit based on timescale + duration
+    try {
+      const unit = detectBestDisplayUnit(parsed.timescale, parsed.maxTime);
+      setDisplayUnit(unit);
+    } catch {
+      setDisplayUnit('us');
+    }
+
+    setGroups([]);
+    setSelectedEvent(null);
+    setSelectedSignalName(null);
+  }, []);
+
   const handleFileUpload = useCallback((file: File) => {
     const reader = new FileReader();
     reader.onload = (e) => {
       const content = e.target?.result as string;
-      const parsed = parseVCD(content);
-      setVcdData(parsed);
-      setVisibleSignals(Array.from(parsed.signals.keys()).slice(0, 10));
-      
-      // Auto-detect a sensible display unit based on timescale + duration
-      try {
-        const unit = detectBestDisplayUnit(parsed.timescale, parsed.maxTime);
-        setDisplayUnit(unit);
-      } catch {
-        setDisplayUnit('us');
-      }
-
-      setGroups([]);
-      setSelectedEvent(null);
-      setSelectedSignalName(null);
+      loadVcdContent(content);
     };
     reader.readAsText(file);
   }, []);
+
+  // If running inside a VS Code webview, listen for messages from the extension
+  React.useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      const msg = (event as any).data;
+      if (msg?.type === 'openVCD' && msg.content) {
+        loadVcdContent(msg.content);
+      }
+    };
+    if (typeof window !== 'undefined') window.addEventListener('message', handler as any);
+    return () => { if (typeof window !== 'undefined') window.removeEventListener('message', handler as any); };
+  }, [loadVcdContent]);
 
   const addGroup = () => {
     const newGroup: SignalGroup = {
