@@ -6,3 +6,29 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# VS Code
+.vscode/
+
+# Build output
+out/
+dist/
+
+# Package artifacts
+*.vsix
+
+# Cache
+.cache/
+.turbo/
+
+# OS
+Thumbs.db
+
+# Databases
+*.sqlite
+*.sqlite3
+*.db
+
+# Temporary
+tmp/
+temp/

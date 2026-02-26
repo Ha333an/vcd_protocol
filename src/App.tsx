@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { Upload, Cpu, Activity, Settings, Plus, Trash2, ChevronRight, FileText } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { parseVCD, VCDData, decodeUART, decodeSPI, decodeAvalon, DecodedEvent, calculateSignalFrequency, calculateSignalMeasurements } from './utils/vcd';
+import { parseVCD, VCDData, decodeUART, decodeSPI, decodeAvalon, DecodedEvent, calculateSignalFrequency, calculateSignalMeasurements, detectBestDisplayUnit } from './utils/vcd';
 import { WaveformViewer } from './components/WaveformViewer';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -46,11 +46,12 @@ export default function App() {
       setVcdData(parsed);
       setVisibleSignals(Array.from(parsed.signals.keys()).slice(0, 10));
       
-      // Try to detect initial unit from timescale
-      const normalized = parsed.timescale.replace(/\s+/g, '');
-      const match = normalized.match(/(\d+)([a-zA-Z]+)/);
-      if (match) {
-        setDisplayUnit(match[2].toLowerCase());
+      // Auto-detect a sensible display unit based on timescale + duration
+      try {
+        const unit = detectBestDisplayUnit(parsed.timescale, parsed.maxTime);
+        setDisplayUnit(unit);
+      } catch {
+        setDisplayUnit('us');
       }
 
       setGroups([]);

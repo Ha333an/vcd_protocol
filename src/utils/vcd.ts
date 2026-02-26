@@ -448,6 +448,31 @@ export function getTimeScaleInfo(timescaleStr: string) {
   return { value: val, unit, factor: val * (units[unit] || 1e-9) };
 }
 
+export function detectBestDisplayUnit(timescaleStr: string, maxTicks: number) {
+  const units: Record<string, number> = {
+    's': 1, 'ms': 1e-3, 'us': 1e-6, 'ns': 1e-9, 'ps': 1e-12, 'fs': 1e-15
+  };
+
+  // Guard
+  if (!timescaleStr || !isFinite(maxTicks) || maxTicks <= 0) return 'us';
+
+  const info = getTimeScaleInfo(timescaleStr);
+  const totalSec = maxTicks * info.factor;
+
+  // Prefer largest unit that gives a value >= 1
+  const order = ['s', 'ms', 'us', 'ns', 'ps', 'fs'];
+  for (const u of order) {
+    const v = totalSec / (units[u] || 1e-9);
+    if (v >= 1) return u;
+  }
+
+  // If nothing matched, try to use the timescale's unit if valid
+  if (info.unit && order.includes(info.unit)) return info.unit;
+
+  // Fallback to microseconds as a sensible default
+  return 'us';
+}
+
 export function convertTicksToUnit(ticks: number, fromTimescale: string, toUnit: string): number {
   const fromInfo = getTimeScaleInfo(fromTimescale);
   const units: Record<string, number> = {

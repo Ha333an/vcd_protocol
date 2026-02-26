@@ -1,0 +1,9 @@
+node_modules
+.vscode
+.git
+src/**
+!.vscodeignore
+README.md
+*.ts
+*.map
+dist/**/*.map

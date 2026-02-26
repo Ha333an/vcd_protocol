@@ -38,6 +38,9 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
   const [hoverTime, setHoverTime] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const currentXRef = useRef<d3.ScaleLinear<number, number> | null>(null);
+  const cursorsRef = useRef<Array<{id:number; time:number; color:string}>>([]);
+  const cursorIdRef = useRef(0);
+  const clearCursorsRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     if (!containerRef.current || !data) return;
@@ -103,8 +106,117 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
       .style('opacity', 0)
       .attr('pointer-events', 'none');
 
+    // shared between render and event handlers
+    let signalPositions: Array<any> = [];
+    let markerGroup: d3.Selection<SVGGElement, unknown, null, undefined> | null = null;
+
     const render = (currentX: d3.ScaleLinear<number, number>) => {
       currentXRef.current = currentX;
+      signalPositions = [];
+      // marker group for clicks
+      if (!markerGroup || markerGroup.empty()) markerGroup = g.append('g').attr('class', 'marker-group');
+      // draw persisted cursors
+      const drawCursors = () => {
+        if (!markerGroup) return;
+        markerGroup.selectAll('*').remove();
+        // labels at top: create/select a dedicated group on svg (not the waveform group)
+        let labelsGroup = svg.select<SVGGElement>('.cursor-labels');
+        if (labelsGroup.empty()) {
+          labelsGroup = svg.append('g').attr('class', 'cursor-labels').attr('transform', `translate(${margin.left},${8})`);
+        }
+        labelsGroup.selectAll('*').remove();
+
+        const innerHeight = totalHeight - margin.top - margin.bottom;
+        const cs = cursorsRef.current;
+
+        for (let idx = 0; idx < cs.length; idx++) {
+          const c = cs[idx];
+          if (!currentXRef.current) continue;
+          const xPos = currentXRef.current(c.time);
+          // dashed vertical line in waveform area
+          markerGroup.append('line')
+            .attr('x1', xPos)
+            .attr('x2', xPos)
+            .attr('y1', 0)
+            .attr('y2', innerHeight)
+            .attr('stroke', c.color)
+            .attr('stroke-width', 1)
+            .attr('stroke-dasharray', '6,4')
+            .attr('pointer-events', 'none');
+
+          // label on top timeline for readability
+          labelsGroup.append('rect')
+            .attr('x', xPos + 4)
+            .attr('y', -8)
+            .attr('height', 18)
+            .attr('rx', 3)
+            .attr('fill', '#000')
+            .attr('fill-opacity', 0.45)
+            .attr('pointer-events', 'none');
+
+          labelsGroup.append('text')
+            .attr('x', xPos + 8)
+            .attr('y', 6)
+            .attr('fill', c.color)
+            .style('font-size', '11px')
+            .style('font-family', 'var(--font-mono)')
+            .attr('pointer-events', 'none')
+            .text(`${convertTicksToUnit(c.time, data.timescale, displayUnit).toFixed(3)} ${displayUnit}`);
+        }
+
+        // show delta between last two cursors on top timeline
+        if (cs.length >= 2 && currentXRef.current) {
+          const a = cs[cs.length - 2];
+          const b = cs[cs.length - 1];
+          const xa = currentXRef.current(a.time);
+          const xb = currentXRef.current(b.time);
+          const midX = (xa + xb) / 2;
+          const delta = Math.abs(b.time - a.time);
+
+          // horizontal double-arrow
+          const yArrow = 20;
+          labelsGroup.append('line')
+            .attr('x1', xa)
+            .attr('x2', xb)
+            .attr('y1', yArrow)
+            .attr('y2', yArrow)
+            .attr('stroke', '#9ae6b4')
+            .attr('stroke-width', 1.5)
+            .attr('pointer-events', 'none');
+
+          const headSize = 6;
+          // left arrowhead (pointing left)
+          labelsGroup.append('path')
+            .attr('d', `M ${xa} ${yArrow} L ${xa + headSize} ${yArrow - headSize/2} L ${xa + headSize} ${yArrow + headSize/2} Z`)
+            .attr('fill', '#9ae6b4')
+            .attr('pointer-events', 'none');
+
+          // right arrowhead (pointing right)
+          labelsGroup.append('path')
+            .attr('d', `M ${xb} ${yArrow} L ${xb - headSize} ${yArrow - headSize/2} L ${xb - headSize} ${yArrow + headSize/2} Z`)
+            .attr('fill', '#9ae6b4')
+            .attr('pointer-events', 'none');
+
+          labelsGroup.append('rect')
+            .attr('x', midX + 2)
+            .attr('y', -8)
+            .attr('height', 18)
+            .attr('width', 140)
+            .attr('rx', 3)
+            .attr('fill', '#000')
+            .attr('fill-opacity', 0.3)
+            .attr('pointer-events', 'none');
+
+          labelsGroup.append('text')
+            .attr('x', midX + 8)
+            .attr('y', 6)
+            .attr('fill', '#9ae6b4')
+            .style('font-size', '11px')
+            .style('font-family', 'var(--font-mono)')
+            .attr('pointer-events', 'none')
+            .text(`${convertTicksToUnit(delta, data.timescale, displayUnit).toFixed(3)} ${displayUnit}`);
+        }
+      };
       grid.call(d3.axisBottom(currentX).ticks(10).tickSize(-totalHeight + margin.top + margin.bottom).tickFormat(() => ''))
         .style('stroke', '#333')
         .style('stroke-opacity', 0.2);
@@ -122,6 +234,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
       const renderSignal = (sigName: string, y: number, color: string = '#00ff00', labelColor: string = '#888') => {
         const signal = data.signals.get(sigName);
         if (!signal) return;
+        signalPositions.push({ type: 'signal', name: signal.name, y, height: signalHeight, signal });
 
         const [xMin, xMax] = currentX.domain();
         const isSelected = selectedSignalName === signal.name;
@@ -285,6 +398,9 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
         const sortedTimes = Array.from(transitionTimes).sort((a, b) => a - b);
         const visibleTimes = [xMin, ...sortedTimes.filter(t => t > xMin && t < xMax), xMax];
 
+        // record bus position for click alignment
+        signalPositions.push({ type: 'bus', name: group.name, y, height: signalHeight, signalNames: group.signalNames });
+
         for (let i = 0; i < visibleTimes.length - 1; i++) {
           const tStart = visibleTimes[i];
           const tEnd = visibleTimes[i+1];
@@ -384,6 +500,9 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
         const yOffset = currentY;
         const [xMin, xMax] = currentX.domain();
 
+        // register protocol row for click alignment
+        signalPositions.push({ type: 'protocol', name: decoder.type, y: yOffset, height: signalHeight, decoder });
+
         waveG.append('text')
           .attr('x', -10)
           .attr('y', yOffset + signalHeight / 2)
@@ -442,7 +561,64 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
 
         currentY += signalHeight + signalSpacing;
       });
+      // draw persisted cursors after rendering waveforms
+      try { drawCursors(); } catch { /* ignore */ }
     };
+
+    const findNearestTransition = (signal: VCDSignal, time: number) => {
+      if (!signal || signal.values.length === 0) return null;
+      let nearest = signal.values[0];
+      let minDiff = Math.abs(signal.values[0].time - time);
+      for (let i = 1; i < signal.values.length; i++) {
+        const diff = Math.abs(signal.values[i].time - time);
+        if (diff < minDiff) { minDiff = diff; nearest = signal.values[i]; }
+      }
+      // find previous value if exists
+      let prevVal = 'x';
+      for (let i = 0; i < signal.values.length; i++) {
+        if (signal.values[i].time >= nearest.time) {
+          prevVal = i > 0 ? signal.values[i-1].value : 'x';
+          break;
+        }
+      }
+      return { time: nearest.time, prevVal, nextVal: nearest.value };
+    };
+
+    svg.on('click', (e) => {
+      if (!currentXRef.current) return;
+      const [mx, my] = d3.pointer(e);
+      const clickTime = currentXRef.current.invert(mx - margin.left);
+      const innerY = my - margin.top;
+
+      // find vertically aligned signal row
+      let row = signalPositions.find(p => innerY >= p.y && innerY <= p.y + p.height);
+      if (!row) {
+        // pick closest by vertical distance
+        let best: any = null; let bestD = Infinity;
+        for (const p of signalPositions) {
+          const cy = p.y + p.height / 2;
+          const d = Math.abs(cy - innerY);
+          if (d < bestD) { bestD = d; best = p; }
+        }
+        row = best;
+      }
+
+      if (!row) return;
+
+      // Use exact clicked time for cursor (do not snap to transitions)
+      const cursorTime = clickTime;
+
+      // Add cursor (do not remove previous)
+      const color = (cursorIdRef.current % 2 === 0) ? '#3b82f6' : '#10b981';
+      cursorsRef.current.push({ id: cursorIdRef.current++, time: cursorTime, color });
+
+      // redraw cursors
+      if (markerGroup) {
+        // drawCursors is defined in render scope; call via re-render
+        // invoke render with same X to ensure cursors are drawn
+        if (currentXRef.current) render(currentXRef.current);
+      }
+    });
 
     const getSignalValueAt = (signal: VCDSignal, time: number): string => {
       let lastVal = 'x';
@@ -463,6 +639,16 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
 
     svg.call(zoomBehavior);
     render(x);
+
+    // expose clear function to UI
+    clearCursorsRef.current = () => {
+      cursorsRef.current = [];
+      cursorIdRef.current = 0;
+      if (markerGroup) markerGroup.selectAll('*').remove();
+      const labels = svg.select('.cursor-labels');
+      if (!labels.empty()) labels.remove();
+      if (currentXRef.current) render(currentXRef.current);
+    };
 
     // Fit to screen shortcut (F key)
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -523,6 +709,14 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
                 ? `${convertTicksToUnit(hoverTime, data.timescale, displayUnit).toFixed(3)} ${displayUnit}`
                 : '---'}
             </span>
+          </div>
+          <div>
+            <button
+              onClick={() => clearCursorsRef.current()}
+              className="ml-2 px-2 py-1 bg-[#0b1220] border border-[#333] text-xs rounded text-gray-300 hover:bg-[#111827]"
+            >
+              Clear Cursors
+            </button>
           </div>
         </div>
       </div>
