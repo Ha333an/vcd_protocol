@@ -36,6 +36,7 @@ export default function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<{ protocolId: string; index: number } | null>(null);
   const [selectedSignalName, setSelectedSignalName] = useState<string | null>(null);
+  const [displayUnit, setDisplayUnit] = useState<string>('ns');
 
   const handleFileUpload = useCallback((file: File) => {
     const reader = new FileReader();
@@ -44,6 +45,14 @@ export default function App() {
       const parsed = parseVCD(content);
       setVcdData(parsed);
       setVisibleSignals(Array.from(parsed.signals.keys()).slice(0, 10));
+      
+      // Try to detect initial unit from timescale
+      const normalized = parsed.timescale.replace(/\s+/g, '');
+      const match = normalized.match(/(\d+)([a-zA-Z]+)/);
+      if (match) {
+        setDisplayUnit(match[2].toLowerCase());
+      }
+
       setGroups([]);
       setSelectedEvent(null);
       setSelectedSignalName(null);
@@ -237,26 +246,24 @@ export default function App() {
       <main className="p-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
         {/* Sidebar: Signal Selection & Protocol Config */}
         <div className="lg:col-span-1 space-y-6">
-          {/* File Info */}
+          {/* Display Scale */}
           {vcdData && (
             <section className="bg-[#141414] border border-[#333] rounded-lg p-4">
               <div className="flex items-center gap-2 mb-4 text-[#f27d26]">
-                <FileText size={16} />
-                <h2 className="text-xs font-bold uppercase tracking-widest font-mono">File Metadata</h2>
+                <Activity size={16} />
+                <h2 className="text-xs font-bold uppercase tracking-widest font-mono">Display Scale</h2>
               </div>
-              <div className="space-y-2 font-mono text-xs">
-                <div className="flex justify-between">
-                  <span className="text-gray-500 italic">Timescale:</span>
-                  <span>{vcdData.timescale}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500 italic">Max Time:</span>
-                  <span>{vcdData.maxTime}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500 italic">Signals:</span>
-                  <span>{vcdData.signals.size}</span>
-                </div>
+              <div className="space-y-1">
+                <label className="block text-[10px] text-gray-500 uppercase font-mono mb-1">Time Unit</label>
+                <select 
+                  value={displayUnit}
+                  onChange={(e) => setDisplayUnit(e.target.value)}
+                  className="w-full bg-[#0a0a0a] border border-[#333] rounded p-1.5 text-xs font-mono text-white outline-none focus:border-[#f27d26]"
+                >
+                  {['fs', 'ps', 'ns', 'us', 'ms', 's'].map(u => (
+                    <option key={u} value={u}>{u.toUpperCase()}</option>
+                  ))}
+                </select>
               </div>
             </section>
           )}
@@ -475,9 +482,25 @@ export default function App() {
           {/* Signal Visibility */}
           {vcdData && (
             <section className="bg-[#141414] border border-[#333] rounded-lg p-4 max-h-[400px] overflow-y-auto">
-              <div className="flex items-center gap-2 mb-4 text-[#f27d26]">
-                <Settings size={16} />
-                <h2 className="text-xs font-bold uppercase tracking-widest font-mono">Visible Signals</h2>
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2 text-[#f27d26]">
+                  <Settings size={16} />
+                  <h2 className="text-xs font-bold uppercase tracking-widest font-mono">Visible Signals</h2>
+                </div>
+                <div className="flex gap-2">
+                  <button 
+                    onClick={() => setVisibleSignals(Array.from(vcdData.signals.keys()))}
+                    className="text-[10px] font-mono text-[#f27d26] hover:text-[#f27d26]/80 border border-[#f27d26]/30 px-1.5 rounded transition-colors"
+                  >
+                    ALL
+                  </button>
+                  <button 
+                    onClick={() => setVisibleSignals([])}
+                    className="text-[10px] font-mono text-gray-500 hover:text-gray-400 border border-gray-500/30 px-1.5 rounded transition-colors"
+                  >
+                    NONE
+                  </button>
+                </div>
               </div>
               <div className="space-y-1">
                 {Array.from(vcdData.signals.keys()).map((name: string) => (
@@ -598,6 +621,7 @@ export default function App() {
               <WaveformViewer 
                 data={vcdData} 
                 visibleSignals={visibleSignals}
+                displayUnit={displayUnit}
                 groups={groups}
                 protocolDecoders={decodedProtocols}
                 selectedEvent={selectedEvent}

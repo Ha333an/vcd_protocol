@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
-import { VCDData, VCDSignal, DecodedEvent, binToHex, calculateSignalFrequency } from '../utils/vcd';
+import { VCDData, VCDSignal, DecodedEvent, binToHex, calculateSignalFrequency, convertTicksToUnit } from '../utils/vcd';
 
 interface WaveformProps {
   data: VCDData;
   visibleSignals: string[];
+  displayUnit: string;
   groups: { id: string; name: string; signalNames: string[]; collapsed?: boolean }[];
   protocolDecoders: {
     id: string;
@@ -23,6 +24,7 @@ interface WaveformProps {
 export const WaveformViewer: React.FC<WaveformProps> = ({ 
   data, 
   visibleSignals, 
+  displayUnit,
   groups,
   protocolDecoders,
   selectedEvent,
@@ -33,7 +35,9 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [zoom, setZoom] = useState({ start: 0, end: data.maxTime });
+  const [hoverTime, setHoverTime] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const currentXRef = useRef<d3.ScaleLinear<number, number> | null>(null);
 
   useEffect(() => {
     if (!containerRef.current || !data) return;
@@ -90,12 +94,25 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
       .attr('class', 'x-axis')
       .attr('transform', `translate(0,0)`);
 
+    const cursorLine = g.append('line')
+      .attr('y1', 0)
+      .attr('y2', totalHeight - margin.top - margin.bottom)
+      .attr('stroke', '#f27d26')
+      .attr('stroke-width', 1)
+      .attr('stroke-dasharray', '4,4')
+      .style('opacity', 0)
+      .attr('pointer-events', 'none');
+
     const render = (currentX: d3.ScaleLinear<number, number>) => {
+      currentXRef.current = currentX;
       grid.call(d3.axisBottom(currentX).ticks(10).tickSize(-totalHeight + margin.top + margin.bottom).tickFormat(() => ''))
         .style('stroke', '#333')
         .style('stroke-opacity', 0.2);
 
-      xAxis.call(d3.axisTop(currentX).ticks(10).tickFormat(d => `${Math.round(Number(d))}${data.timescale}`));
+      xAxis.call(d3.axisTop(currentX).ticks(10).tickFormat(d => {
+        const val = convertTicksToUnit(Number(d), data.timescale, displayUnit);
+        return `${val.toFixed(1)}${displayUnit}`;
+      }));
 
       g.selectAll('.waveform-group').remove();
       const waveG = g.append('g').attr('class', 'waveform-group');
@@ -459,15 +476,33 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
     window.addEventListener('keydown', handleKeyDown);
 
     // Initial render
+    svg.on('mousemove', (e) => {
+      if (!currentXRef.current) return;
+      const [mx] = d3.pointer(e);
+      const time = currentXRef.current.invert(mx - margin.left);
+      if (time >= zoom.start && time <= zoom.end) {
+        setHoverTime(time);
+        cursorLine.attr('x1', currentXRef.current(time)).attr('x2', currentXRef.current(time)).style('opacity', 1);
+      } else {
+        setHoverTime(null);
+        cursorLine.style('opacity', 0);
+      }
+    });
+
+    svg.on('mouseleave', () => {
+      setHoverTime(null);
+      cursorLine.style('opacity', 0);
+    });
+
     return () => {
       svg.on('.zoom', null);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [data, visibleSignals, protocolDecoders, selectedEvent, selectedSignalName, groups, onToggleGroup, onSelectEvent, onSelectSignal, zoom]);
+  }, [data, visibleSignals, displayUnit, protocolDecoders, selectedEvent, selectedSignalName, groups, onToggleGroup, onSelectEvent, onSelectSignal, zoom]);
 
   return (
-    <div className="w-full bg-[#141414] rounded-lg border border-[#333] p-4">
-      <div className="flex justify-between items-center mb-4">
+    <div className="w-full bg-[#141414] rounded-lg border border-[#333] p-4 flex flex-col gap-4">
+      <div className="flex justify-between items-center">
         <div className="flex gap-4 text-[10px] text-gray-500 font-mono uppercase tracking-widest">
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 bg-[#00ff00]"></div>
@@ -479,8 +514,33 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
           </div>
           <span className="ml-4">Scroll to Zoom • Drag to Pan • Click to Select • Press 'F' to Fit</span>
         </div>
+        
+        <div className="flex items-center gap-4 text-[10px] font-mono">
+          <div className="flex items-center gap-2 text-gray-500">
+            <span className="uppercase tracking-widest opacity-50">Cursor:</span>
+            <span className="text-[#f27d26] font-bold min-w-[80px]">
+              {hoverTime !== null 
+                ? `${convertTicksToUnit(hoverTime, data.timescale, displayUnit).toFixed(3)} ${displayUnit}`
+                : '---'}
+            </span>
+          </div>
+        </div>
       </div>
-      <div ref={containerRef} className="w-full overflow-hidden" />
+
+      <div className="w-full overflow-y-auto max-h-[600px] custom-scrollbar border-t border-[#333] pt-4">
+        <div ref={containerRef} className="w-full" />
+      </div>
+
+      <div className="flex justify-between items-center px-2 py-1 bg-[#0a0a0a] rounded border border-[#333] text-[9px] font-mono text-gray-500">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <span className="opacity-50 uppercase">Visible Range:</span>
+            <span className="text-gray-300">
+              {convertTicksToUnit(zoom.start, data.timescale, displayUnit).toFixed(1)} - {convertTicksToUnit(zoom.end, data.timescale, displayUnit).toFixed(1)} {displayUnit}
+            </span>
+          </div>
+        </div>
+      </div>
     </div>
   );
 };

@@ -435,6 +435,28 @@ export function decodeAvalon(
   return events;
 }
 
+export function getTimeScaleInfo(timescaleStr: string) {
+  const normalized = timescaleStr.replace(/\s+/g, '');
+  const match = normalized.match(/(\d+)([a-zA-Z]+)/);
+  if (!match) return { value: 1, unit: 'ns', factor: 1e-9 };
+  
+  const val = parseInt(match[1]);
+  const unit = match[2].toLowerCase();
+  const units: Record<string, number> = {
+    's': 1, 'ms': 1e-3, 'us': 1e-6, 'ns': 1e-9, 'ps': 1e-12, 'fs': 1e-15
+  };
+  return { value: val, unit, factor: val * (units[unit] || 1e-9) };
+}
+
+export function convertTicksToUnit(ticks: number, fromTimescale: string, toUnit: string): number {
+  const fromInfo = getTimeScaleInfo(fromTimescale);
+  const units: Record<string, number> = {
+    's': 1, 'ms': 1e-3, 'us': 1e-6, 'ns': 1e-9, 'ps': 1e-12, 'fs': 1e-15
+  };
+  const toFactor = units[toUnit.toLowerCase()] || 1e-9;
+  return (ticks * fromInfo.factor) / toFactor;
+}
+
 export function calculateSignalMeasurements(signal: VCDSignal, timescaleStr: string) {
   if (signal.size > 1 || signal.values.length < 2) return null;
 
