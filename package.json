@@ -1,5 +1,5 @@
 {
-  "name": "vcd-viewer-with-protocol",
+  "name": "vcd-analyzer",
   "private": true,
   "version": "1.0.1",
   "scripts": {

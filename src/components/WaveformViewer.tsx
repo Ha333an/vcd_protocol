@@ -6,6 +6,7 @@ interface WaveformProps {
   data: VCDData;
   visibleSignals: string[];
   displayUnit: string;
+  onChangeDisplayUnit?: (unit: string) => void;
   groups: { id: string; name: string; signalNames: string[]; collapsed?: boolean }[];
   protocolDecoders: {
     id: string;
@@ -29,6 +30,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
   data, 
   visibleSignals, 
   displayUnit,
+  onChangeDisplayUnit,
   groups,
   protocolDecoders,
   selectedEvent,
@@ -594,10 +596,52 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
                         if (!rect) return;
                         const clientX = (e as MouseEvent).clientX;
                         const clientY = (e as MouseEvent).clientY;
-                        const title = `${decoder.type} ${event.label || ''}`.trim();
-                        const start = convertTicksToUnit(event.startTime, data.timescale, displayUnit).toFixed(3);
-                        const end = convertTicksToUnit(event.endTime, data.timescale, displayUnit).toFixed(3);
-                        const body = `${event.data ?? ''}\n${start} - ${end} ${displayUnit}`;
+                        const labelUpper = (event.label || '').toString().toUpperCase();
+                        const dataUpper = (event.data || '').toString().toUpperCase();
+                        const isWrite = labelUpper.startsWith('WR') || dataUpper.includes('WRITE');
+                        const isRead = labelUpper.startsWith('RD') || dataUpper.includes('READ');
+
+                        let title = `${decoder.type} ${event.label || ''}`.trim();
+                        let bodyLines: string[] = [];
+
+                        // concise tooltip: show RD/WR, Address, then Data
+                        if (decoder.type === 'Avalon') {
+                          const extractHex = (s: string | undefined) => {
+                            if (!s) return null;
+                            const m = s.match(/0x([0-9A-Fa-f]+)/);
+                            return m ? `0x${m[1].toUpperCase()}` : null;
+                          };
+
+                          const thisHex = extractHex(event.data);
+                          if (isRead) title = 'RD';
+                          else if (isWrite) title = 'WR';
+
+                          if (labelUpper.startsWith('RD DATA')) {
+                            const prior = decoder.decoded.slice().reverse().find(ev => ev.endTime <= event.startTime && (ev.label || '').toString().toUpperCase().startsWith('RD REQ'));
+                            const addrHex = extractHex(prior?.data);
+                            if (addrHex) bodyLines.push(`Addr: ${addrHex}`);
+                            if (thisHex) bodyLines.push(`Data: ${thisHex}`);
+                          } else if (labelUpper.startsWith('RD REQ')) {
+                            const next = decoder.decoded.find(ev => ev.startTime >= event.startTime && (ev.label || '').toString().toUpperCase().startsWith('RD DATA'));
+                            const dataHex = extractHex(next?.data) || thisHex;
+                            const addrHex = extractHex(event.data) || extractHex(event.label);
+                            if (addrHex) bodyLines.push(`Addr: ${addrHex}`);
+                            if (dataHex) bodyLines.push(`Data: ${dataHex}`);
+                          } else if (isWrite) {
+                            // try extract addr/data from event.data
+                            const addrHex = extractHex(event.data) || extractHex(event.label);
+                            if (addrHex) bodyLines.push(`Addr: ${addrHex}`);
+                            if (thisHex) bodyLines.push(`Data: ${thisHex}`);
+                          } else {
+                            if (thisHex) bodyLines.push(`Data: ${thisHex}`);
+                          }
+                        } else {
+                          // non-Avalon: show label and data compactly
+                          title = (event.label || decoder.type).toString();
+                          if (event.data) bodyLines.push(event.data.toString());
+                        }
+
+                        const body = bodyLines.join('\n');
                         setTooltip({ x: clientX - rect.left + 8, y: clientY - rect.top + 8, title, body });
                       } catch { /* ignore */ }
                     })
@@ -723,10 +767,49 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
                 if (!rect) return;
                 const clientX = (e as MouseEvent).clientX;
                 const clientY = (e as MouseEvent).clientY;
-                const title = `${decoder.type} ${event.label || ''}`.trim();
-                const start = convertTicksToUnit(event.startTime, data.timescale, displayUnit).toFixed(3);
-                const end = convertTicksToUnit(event.endTime, data.timescale, displayUnit).toFixed(3);
-                const body = `${event.data ?? ''}\n${start} - ${end} ${displayUnit}`;
+                const labelUpper = (event.label || '').toString().toUpperCase();
+                const dataUpper = (event.data || '').toString().toUpperCase();
+                const isWrite = labelUpper.startsWith('WR') || dataUpper.includes('WRITE');
+                const isRead = labelUpper.startsWith('RD') || dataUpper.includes('READ');
+
+                let title = `${decoder.type} ${event.label || ''}`.trim();
+                let bodyLines: string[] = [];
+
+                if (decoder.type === 'Avalon') {
+                  const extractHex = (s: string | undefined) => {
+                    if (!s) return null;
+                    const m = s.match(/0x([0-9A-Fa-f]+)/);
+                    return m ? `0x${m[1].toUpperCase()}` : null;
+                  };
+
+                  const thisHex = extractHex(event.data);
+                  if (isRead) title = 'RD';
+                  else if (isWrite) title = 'WR';
+
+                  if (labelUpper.startsWith('RD DATA')) {
+                    const prior = decoder.decoded.slice().reverse().find(ev => ev.endTime <= event.startTime && (ev.label || '').toString().toUpperCase().startsWith('RD REQ'));
+                    const addrHex = extractHex(prior?.data);
+                    if (addrHex) bodyLines.push(`Addr: ${addrHex}`);
+                    if (thisHex) bodyLines.push(`Data: ${thisHex}`);
+                  } else if (labelUpper.startsWith('RD REQ')) {
+                    const next = decoder.decoded.find(ev => ev.startTime >= event.startTime && (ev.label || '').toString().toUpperCase().startsWith('RD DATA'));
+                    const dataHex = extractHex(next?.data) || thisHex;
+                    const addrHex = extractHex(event.data) || extractHex(event.label);
+                    if (addrHex) bodyLines.push(`Addr: ${addrHex}`);
+                    if (dataHex) bodyLines.push(`Data: ${dataHex}`);
+                  } else if (isWrite) {
+                    const addrHex = extractHex(event.data) || extractHex(event.label);
+                    if (addrHex) bodyLines.push(`Addr: ${addrHex}`);
+                    if (thisHex) bodyLines.push(`Data: ${thisHex}`);
+                  } else {
+                    if (thisHex) bodyLines.push(`Data: ${thisHex}`);
+                  }
+                } else {
+                  title = (event.label || decoder.type).toString();
+                  if (event.data) bodyLines.push(event.data.toString());
+                }
+
+                const body = bodyLines.join('\n');
                 setTooltip({ x: clientX - rect.left + 8, y: clientY - rect.top + 8, title, body });
               } catch { /* ignore */ }
             })
@@ -892,14 +975,65 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
 
-    // Initial render
+    // Initial render + hover tooltip for signals
     svg.on('mousemove', (e) => {
       if (!currentXRef.current) return;
-      const [mx] = d3.pointer(e);
+      const [mx, my] = d3.pointer(e);
       const time = currentXRef.current.invert(mx - margin.left);
       if (time >= zoom.start && time <= zoom.end) {
         setHoverTime(time);
         cursorLine.attr('x1', currentXRef.current(time)).attr('x2', currentXRef.current(time)).style('opacity', 1);
+
+        // Only show signal hover tooltip when pointer is over waveform area (not over labels)
+        if (mx > margin.left) {
+          const innerY = my - margin.top;
+          // find vertically aligned signal row
+          let row = signalPositions.find(p => innerY >= p.y && innerY <= p.y + p.height);
+          if (!row) {
+            // pick closest by vertical distance
+            let best: any = null; let bestD = Infinity;
+            for (const p of signalPositions) {
+              const cy = p.y + p.height / 2;
+              const d = Math.abs(cy - innerY);
+              if (d < bestD) { bestD = d; best = p; }
+            }
+            row = best;
+          }
+
+          if (row && (row.type === 'signal' || row.type === 'bus')) {
+            try {
+              const timeUnit = convertTicksToUnit(time, data.timescale, displayUnit).toFixed(3);
+              let hex = 'X';
+              let dec: string | number = 'X';
+
+              if (row.type === 'signal') {
+                const sig: VCDSignal = row.signal;
+                const val = getSignalValueAt(sig, time);
+                if (sig.size > 1) {
+                  // multi-bit represented as binary string
+                  hex = binToHex(val);
+                  if (hex !== 'X') dec = BigInt('0x' + hex).toString();
+                } else {
+                  // single bit
+                  hex = val === '1' ? '0x1' : (val === '0' ? '0x0' : 'X');
+                  dec = val === '1' ? 1 : (val === '0' ? 0 : 'X');
+                }
+                const short = (sig.name.split('.').pop() || sig.name);
+                setTooltip({ x: mx - margin.left + 8 + margin.left, y: my - margin.top + 8 + margin.top, title: short, body: `Time: ${timeUnit} ${displayUnit}\nHex: ${hex}\nDec: ${dec}` });
+              } else if (row.type === 'bus') {
+                const names: string[] = row.signalNames;
+                let binStr = '';
+                for (const n of names) {
+                  const s = data.signals.get(n);
+                  binStr += s ? getSignalValueAt(s, time) : 'x';
+                }
+                hex = binToHex(binStr);
+                if (hex !== 'X') dec = BigInt('0x' + hex).toString();
+                setTooltip({ x: mx - margin.left + 8 + margin.left, y: my - margin.top + 8 + margin.top, title: row.name, body: `Time: ${timeUnit} ${displayUnit}\nHex: ${hex}\nDec: ${dec}` });
+              }
+            } catch { /* ignore */ }
+          }
+        }
       } else {
         setHoverTime(null);
         cursorLine.style('opacity', 0);
@@ -941,6 +1075,18 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
                 : '---'}
             </span>
           </div>
+          {onChangeDisplayUnit && (
+            <div className="flex items-center gap-2">
+              <label className="text-[10px] text-gray-400">Unit</label>
+              <select value={displayUnit} onChange={e => onChangeDisplayUnit(e.target.value)} className="bg-[#0b1220] border border-[#333] rounded p-1 text-xs font-mono text-white outline-none">
+                <option value="s">s</option>
+                <option value="ms">ms</option>
+                <option value="us">us</option>
+                <option value="ns">ns</option>
+                <option value="ps">ps</option>
+              </select>
+            </div>
+          )}
           <div>
             <button
               onClick={() => clearCursorsRef.current()}

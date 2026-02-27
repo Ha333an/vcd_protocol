@@ -5,7 +5,6 @@ import { parseVCD, VCDData, decodeUART, decodeSPI, decodeAvalon, DecodedEvent, c
 import { WaveformViewer } from './components/WaveformViewer';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
@@ -35,6 +34,7 @@ export default function App() {
   const [groups, setGroups] = useState<SignalGroup[]>([]);
   const [protocols, setProtocols] = useState<ProtocolConfig[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+   const [sidebarSelectedSignals, setSidebarSelectedSignals] = useState<string[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<{ protocolId: string; index: number } | null>(null);
   const [selectedSignalName, setSelectedSignalName] = useState<string | null>(null);
@@ -109,7 +109,7 @@ export default function App() {
       collapsed: false
     };
     setGroups([...groups, newGroup]);
-  };
+    };
 
   const toggleGroupCollapse = (id: string) => {
     // If this is a protocol group (proto_<id>), toggle collapsed on protocols state
@@ -312,19 +312,44 @@ export default function App() {
       const lower = new Set(names.map(n => leaf(n)));
       const hasCLK = Array.from(lower).some(n => n === 'clk' || n.includes('clk') || n.includes('clock'));
       const hasADDR = Array.from(lower).some(n => n.includes('addr') || n.includes('address'));
-      const hasREAD = Array.from(lower).some(n => n === 'read' || n.includes('read'));
-      const hasWRITE = Array.from(lower).some(n => n === 'write' || n.includes('write'));
+      // For READ/WRITE detection avoid matching signals like readdatavalid
+      const hasREAD = Array.from(lower).some(n => (n === 'read' || n === 'rd' || /(^|_|\.)read($|_|\.)/.test(n)) && !n.includes('data') && !n.includes('valid'));
+      const hasWRITE = Array.from(lower).some(n => (n === 'write' || n === 'wr' || /(^|_|\.)write($|_|\.)/.test(n)) && !n.includes('data') && !n.includes('valid'));
       if (hasCLK && (hasADDR && (hasREAD || hasWRITE))) {
         const clk = names.find(n => leaf(n) === 'clk' || leaf(n).includes('clk') || leaf(n).includes('clock'));
         const addr = names.find(n => leaf(n).includes('addr') || leaf(n).includes('address'));
-        const read = names.find(n => leaf(n) === 'read' || leaf(n).includes('read'));
-        const write = names.find(n => leaf(n) === 'write' || leaf(n).includes('write'));
+        const read = names.find(n => {
+          const l = leaf(n);
+          return (l === 'read' || l === 'rd' || /(^|_|\.)read($|_|\.)/.test(l)) && !l.includes('data') && !l.includes('valid');
+        });
+        const write = names.find(n => {
+          const l = leaf(n);
+          return (l === 'write' || l === 'wr' || /(^|_|\.)write($|_|\.)/.test(l)) && !l.includes('data') && !l.includes('valid');
+        });
         const wrdata = names.find(n => leaf(n).includes('wrdata') || leaf(n).includes('writedata'));
-        const rddata = names.find(n => leaf(n).includes('rddata') || leaf(n).includes('readdata'));
+        // prefer rddata/readdata but avoid matching readdatavalid; prefer explicit rddata
+        const rddataCandidates = names.filter(n => {
+          const l = leaf(n);
+          return (l.includes('rddata') || l.includes('readdata')) && !l.includes('valid') && !l.includes('vld');
+        });
+        const rddata = rddataCandidates.length > 0 ? rddataCandidates[0] : names.find(n => leaf(n).includes('rddata') || leaf(n).includes('readdata'));
         const wait = names.find(n => leaf(n).includes('wait') || leaf(n).includes('waitrequest'));
-        const rdvalid = names.find(n => leaf(n).includes('rdvalid') || leaf(n).includes('readdatavalid'));
+        // prefer explicit read-valid signals (readdatavalid / rdvalid)
+        const rdvalid = names.find(n => {
+          const l = leaf(n);
+          return l === 'rdvalid' || l.includes('readdatavalid') || l.includes('readdatavalid') || (l.includes('valid') && l.includes('read'));
+        });
+        const byteEnable = names.find(n => leaf(n).includes('byteenable') || leaf(n).includes('byte_en') || leaf(n).includes('byteenable_n'));
         if (clk) {
-          detected.push({ id: Math.random().toString(36).substr(2,9), type: 'Avalon', signals: [clk, addr || '', read || '', write || '', wrdata || '', rddata || '', wait || '', rdvalid || ''], config: {}, collapsed: true });
+          // avoid using the same signal for both rddata and rdvalid
+          let finalRdData = rddata;
+          let finalRdValid = rdvalid;
+          if (finalRdData && finalRdValid && finalRdData === finalRdValid) {
+            finalRdValid = undefined;
+          }
+
+          // keep internal order for decoder usage: CLK, ADDR, READ, WRITE, WRDATA, RDDATA, WAIT, RDDATAVALID
+          detected.push({ id: Math.random().toString(36).substr(2,9), type: 'Avalon', signals: [clk, addr || '', read || '', write || '', wrdata || '', finalRdData || '', wait || '', finalRdValid || '', byteEnable || ''], config: {}, collapsed: true });
         }
       }
     });
@@ -398,7 +423,31 @@ export default function App() {
       }
       return `${p.type}`;
     })(),
-    signalNames: p.signals.filter(s => !!s),
+    signalNames: (() => {
+      const sigs = p.signals.filter(Boolean) as string[];
+      const leaf = (name: string) => name.split('.').pop()!.toLowerCase();
+      const ordered: string[] = [];
+      const used = new Set<string>();
+
+      const findAndAdd = (pred: (l: string) => boolean) => {
+        const found = sigs.find(s => !used.has(s) && pred(leaf(s)));
+        if (found) { ordered.push(found); used.add(found); }
+      };
+
+      // Desired UI order (exclude CLK): address, read, readdata, readdatavalid, write, writedata, waitrequest, byteenable
+      findAndAdd(l => l.includes('addr') || l.includes('address'));
+      findAndAdd(l => (l === 'read' || l === 'rd' || l.includes('read')) && !l.includes('data') && !l.includes('valid'));
+      findAndAdd(l => l.includes('rddata') || l.includes('readdata'));
+      findAndAdd(l => l === 'rdvalid' || l.includes('readdatavalid') || (l.includes('valid') && l.includes('read')));
+      findAndAdd(l => (l === 'write' || l === 'wr' || l.includes('write')) && !l.includes('data') && !l.includes('valid'));
+      findAndAdd(l => l.includes('wrdata') || l.includes('writedata'));
+      findAndAdd(l => l.includes('wait') || l.includes('waitrequest'));
+      findAndAdd(l => l.includes('byteenable') || l.includes('byte_en'));
+
+      // Append any remaining signals (except clk) in original order
+      sigs.forEach(s => { if (!used.has(s) && leaf(s) !== 'clk') { ordered.push(s); used.add(s); } });
+      return ordered;
+    })(),
     collapsed: p.collapsed ?? true
   }));
 
@@ -433,24 +482,51 @@ export default function App() {
       <main className="p-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
         {/* Sidebar: Signal Selection & Protocol Config */}
         <div className="lg:col-span-1 space-y-6">
-          {/* Display Scale */}
+          {/* Visible Signals (moved to top) */}
           {vcdData && (
-            <section className="bg-[#141414] border border-[#333] rounded-lg p-4">
-              <div className="flex items-center gap-2 mb-4 text-[#f27d26]">
-                <Activity size={16} />
-                <h2 className="text-xs font-bold uppercase tracking-widest font-mono">Display Scale</h2>
+            <section className="bg-[#141414] border border-[#333] rounded-lg p-4 max-h-[400px] overflow-y-auto">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2 text-[#f27d26]">
+                  <Settings size={16} />
+                  <h2 className="text-xs font-bold uppercase tracking-widest font-mono">Visible Signals</h2>
+                </div>
+                <div className="flex gap-2">
+                  <button 
+                    onClick={() => setVisibleSignals(Array.from(vcdData.signals.keys()))}
+                    className="text-[10px] font-mono text-[#f27d26] hover:text-[#f27d26]/80 border border-[#f27d26]/30 px-1.5 rounded transition-colors"
+                  >
+                    ALL
+                  </button>
+                  <button 
+                    onClick={() => setVisibleSignals([])}
+                    className="text-[10px] font-mono text-gray-500 hover:text-gray-400 border border-gray-500/30 px-1.5 rounded transition-colors"
+                  >
+                    NONE
+                  </button>
+                </div>
               </div>
               <div className="space-y-1">
-                <label className="block text-[10px] text-gray-500 uppercase font-mono mb-1">Time Unit</label>
-                <select 
-                  value={displayUnit}
-                  onChange={(e) => setDisplayUnit(e.target.value)}
-                  className="w-full bg-[#0a0a0a] border border-[#333] rounded p-1.5 text-xs font-mono text-white outline-none focus:border-[#f27d26]"
-                >
-                  {['fs', 'ps', 'ns', 'us', 'ms', 's'].map(u => (
-                    <option key={u} value={u}>{u.toUpperCase()}</option>
-                  ))}
-                </select>
+                {Array.from(vcdData.signals.keys()).map((name: string) => (
+                  <label key={name} className="flex items-center gap-2 p-1 hover:bg-[#222] rounded cursor-pointer group">
+                    <input 
+                      type="checkbox"
+                      checked={visibleSignals.includes(name)}
+                      onChange={(e) => {
+                        if (e.target.checked) setVisibleSignals([...visibleSignals, name]);
+                        else setVisibleSignals(visibleSignals.filter(s => s !== name));
+                      }}
+                      className="accent-[#f27d26]"
+                    />
+                    <div className="flex flex-col">
+                      <span className="text-xs font-mono text-gray-400 group-hover:text-white transition-colors">{name}</span>
+                      {vcdData.signals.get(name) && (name.toLowerCase().includes('clk') || name.toLowerCase().includes('clock')) && (
+                        <span className="text-[9px] text-emerald-500 font-mono opacity-60">
+                          {calculateSignalFrequency(vcdData.signals.get(name)!, vcdData.timescale)}
+                        </span>
+                      )}
+                    </div>
+                  </label>
+                ))}
               </div>
             </section>
           )}
@@ -676,53 +752,7 @@ export default function App() {
           </section>
 
           {/* Signal Visibility */}
-          {vcdData && (
-            <section className="bg-[#141414] border border-[#333] rounded-lg p-4 max-h-[400px] overflow-y-auto">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-2 text-[#f27d26]">
-                  <Settings size={16} />
-                  <h2 className="text-xs font-bold uppercase tracking-widest font-mono">Visible Signals</h2>
-                </div>
-                <div className="flex gap-2">
-                  <button 
-                    onClick={() => setVisibleSignals(Array.from(vcdData.signals.keys()))}
-                    className="text-[10px] font-mono text-[#f27d26] hover:text-[#f27d26]/80 border border-[#f27d26]/30 px-1.5 rounded transition-colors"
-                  >
-                    ALL
-                  </button>
-                  <button 
-                    onClick={() => setVisibleSignals([])}
-                    className="text-[10px] font-mono text-gray-500 hover:text-gray-400 border border-gray-500/30 px-1.5 rounded transition-colors"
-                  >
-                    NONE
-                  </button>
-                </div>
-              </div>
-              <div className="space-y-1">
-                {Array.from(vcdData.signals.keys()).map((name: string) => (
-                  <label key={name} className="flex items-center gap-2 p-1 hover:bg-[#222] rounded cursor-pointer group">
-                    <input 
-                      type="checkbox"
-                      checked={visibleSignals.includes(name)}
-                      onChange={(e) => {
-                        if (e.target.checked) setVisibleSignals([...visibleSignals, name]);
-                        else setVisibleSignals(visibleSignals.filter(s => s !== name));
-                      }}
-                      className="accent-[#f27d26]"
-                    />
-                    <div className="flex flex-col">
-                      <span className="text-xs font-mono text-gray-400 group-hover:text-white transition-colors">{name}</span>
-                      {vcdData.signals.get(name) && (name.toLowerCase().includes('clk') || name.toLowerCase().includes('clock')) && (
-                        <span className="text-[9px] text-emerald-500 font-mono opacity-60">
-                          {calculateSignalFrequency(vcdData.signals.get(name)!, vcdData.timescale)}
-                        </span>
-                      )}
-                    </div>
-                  </label>
-                ))}
-              </div>
-            </section>
-          )}
+          {/* moved Visible Signals to top of sidebar */}
         </div>
 
         {/* Main Viewer Area */}
