@@ -1,7 +1,8 @@
 {
   "name": "vcd-analyzer",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.0.2",
+  "icon": "icon.png",
   "scripts": {
     "start": "npm run dev",
     "dev": "vite --port=3000 --host=0.0.0.0",
