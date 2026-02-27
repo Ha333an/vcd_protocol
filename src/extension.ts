@@ -3,61 +3,76 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 export function activate(context: vscode.ExtensionContext) {
-  const openViewer = async (uri?: vscode.Uri) => {
-    const panel = vscode.window.createWebviewPanel(
-      'vcdViewer',
-      uri ? `VCD Viewer — ${path.basename(uri.fsPath)}` : 'VCD Viewer',
-      vscode.ViewColumn.One,
-      {
-        enableScripts: true,
-        localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'dist')]
-      }
-    );
-
-    const indexPath = path.join(context.extensionPath, 'dist', 'index.html');
-    if (!fs.existsSync(indexPath)) {
-      vscode.window.showErrorMessage('Build the web app first: run `npm run build`');
-      return;
-    }
-
-    let html = fs.readFileSync(indexPath, 'utf8');
-
-    // Rewrite asset URLs (href/src) to use webview URIs
-    html = html.replace(/(href|src)=("|')\/?([^"'>]+)("|')/g, (m, attr, q1, p1, q2) => {
-      try {
-        const resource = vscode.Uri.joinPath(context.extensionUri, 'dist', p1);
-        const webviewUri = panel.webview.asWebviewUri(resource);
-        return `${attr}=${q1}${webviewUri}${q2}`;
-      } catch (e) {
-        return m;
-      }
-    });
-
-    panel.webview.html = html;
-
-    // If a URI was provided, read file and post message to webview once ready
+  // Keep command to open viewer programmatically
+  const disposable = vscode.commands.registerCommand('vcdProtocol.openViewer', async (uri?: vscode.Uri) => {
     if (uri) {
-      try {
-        const bytes = await vscode.workspace.fs.readFile(uri);
-        const content = Buffer.from(bytes).toString('utf8');
-        // Delay slightly to allow the webview to initialize
-        setTimeout(() => panel.webview.postMessage({ type: 'openVCD', content }), 300);
-      } catch (e) {
-        console.error('Failed to load VCD:', e);
-      }
-    }
-  };
-
-  const disposable = vscode.commands.registerCommand('vcdProtocol.openViewer', async (uri?: vscode.Uri) => openViewer(uri));
-
-  // When a text document is opened and has .vcd extension, open the viewer
-  const onOpen = vscode.workspace.onDidOpenTextDocument((doc) => {
-    if (doc.uri && doc.uri.fsPath && doc.uri.fsPath.toLowerCase().endsWith('.vcd')) {
-      vscode.commands.executeCommand('vcdProtocol.openViewer', doc.uri);
+      vscode.commands.executeCommand('vscode.openWith', uri, VcdCustomEditorProvider.viewType);
+    } else {
+      vscode.window.showInformationMessage('Open a .vcd file to view it.');
     }
   });
 
-  context.subscriptions.push(disposable, onOpen);
+  // Register custom editor provider so .vcd opens with the viewer by default
+  class VcdCustomEditorProvider implements vscode.CustomTextEditorProvider {
+    public static readonly viewType = 'vcdProtocol.viewer';
+
+    constructor(private readonly context: vscode.ExtensionContext) {}
+
+    public async resolveCustomTextEditor(document: vscode.TextDocument, webviewPanel: vscode.WebviewPanel, _token: vscode.CancellationToken): Promise<void> {
+      webviewPanel.webview.options = {
+        enableScripts: true,
+        localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'dist')]
+      };
+
+      const indexPath = path.join(this.context.extensionPath, 'dist', 'index.html');
+      if (!fs.existsSync(indexPath)) {
+        vscode.window.showErrorMessage('Build the web app first: run `npm run build`');
+        return;
+      }
+
+      let html = fs.readFileSync(indexPath, 'utf8');
+      html = html.replace(/(href|src)=("|')\/?([^"'>]+)("|')/g, (m, attr, q1, p1, q2) => {
+        try {
+          const resource = vscode.Uri.joinPath(this.context.extensionUri, 'dist', p1);
+          const webviewUri = webviewPanel.webview.asWebviewUri(resource);
+          return `${attr}=${q1}${webviewUri}${q2}`;
+        } catch (e) {
+          return m;
+        }
+      });
+
+      webviewPanel.webview.html = html;
+
+      // Listen for a ready handshake from the webview before posting large content.
+      const readyListener = webviewPanel.webview.onDidReceiveMessage((msg) => {
+        if (msg?.type === 'ready') {
+          webviewPanel.webview.postMessage({ type: 'openVCD', content: document.getText() });
+        }
+      });
+
+      // Fallback: if the webview missed the handshake, post after a short delay.
+      const fallbackTimer = setTimeout(() => {
+        try {
+          webviewPanel.webview.postMessage({ type: 'openVCD', content: document.getText() });
+        } catch (e) {}
+      }, 250);
+
+      // Update webview when the document changes
+      const changeSub = vscode.workspace.onDidChangeTextDocument((e) => {
+        if (e.document.uri.toString() === document.uri.toString()) {
+          webviewPanel.webview.postMessage({ type: 'openVCD', content: document.getText() });
+        }
+      });
+
+      webviewPanel.onDidDispose(() => {
+        changeSub.dispose();
+        readyListener.dispose();
+        clearTimeout(fallbackTimer);
+      });
+    }
+  }
+
+  context.subscriptions.push(disposable, vscode.window.registerCustomEditorProvider(VcdCustomEditorProvider.viewType, new VcdCustomEditorProvider(context), { supportsMultipleEditorsPerDocument: false }));
 }
 
 export function deactivate() {}

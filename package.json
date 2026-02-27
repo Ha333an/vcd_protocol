@@ -1,13 +1,12 @@
 {
-  "name": "react-example",
+  "name": "vcd-viewer-with-protocol",
   "private": true,
-  "version": "1.0.0",
-  "type": "module",
+  "version": "1.0.1",
   "scripts": {
     "start": "npm run dev",
     "dev": "vite --port=3000 --host=0.0.0.0",
     "build:web": "vite build",
-    "build:extension": "esbuild src/extension.ts --bundle --platform=node --target=node16 --external:vscode --outfile=out/extension.js",
+    "build:extension": "esbuild src/extension.ts --bundle --platform=node --target=node16 --format=cjs --external:vscode --outfile=out/extension.js",
     "build": "npm run build:web",
     "vscode:prepublish": "npm run build:extension && npm run build:web",
     "preview": "vite preview",
@@ -65,7 +64,8 @@
   "main": "out/extension.js",
   "activationEvents": [
     "onCommand:vcdProtocol.openViewer",
-    "onLanguage:vcd"
+    "onLanguage:vcd",
+    "onCustomEditor:vcdProtocol.viewer"
   ],
   "contributes": {
     "languages": [
@@ -73,6 +73,18 @@
         "id": "vcd",
         "extensions": [".vcd"],
         "aliases": ["VCD"]
+      }
+    ],
+    "customEditors": [
+      {
+        "viewType": "vcdProtocol.viewer",
+        "displayName": "VCD Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.vcd",
+            "priority": "default"
+          }
+        ]
       }
     ],
     "commands": [

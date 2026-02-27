@@ -34,6 +34,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
   onToggleGroup
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [tooltip, setTooltip] = useState<null | { x: number; y: number; title: string; body: string }>(null);
   const [zoom, setZoom] = useState({ start: 0, end: data.maxTime });
   const [hoverTime, setHoverTime] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -250,7 +251,19 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
           .on('click', (e) => {
             e.stopPropagation();
             onSelectSignal(isSelected ? null : signal.name);
-          });
+          })
+          .on('mousemove', (e: any) => {
+            try {
+              const rect = containerRef.current?.getBoundingClientRect();
+              if (!rect) return;
+              const clientX = (e as MouseEvent).clientX;
+              const clientY = (e as MouseEvent).clientY;
+              const short = label;
+              const full = signal.name;
+              setTooltip({ x: clientX - rect.left + 8, y: clientY - rect.top + 8, title: short, body: full });
+            } catch { /* ignore */ }
+          })
+          .on('mouseout', () => setTooltip(null));
 
         const labelText = labelGroup.append('text')
           .attr('x', -10)
@@ -565,9 +578,23 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
                 if (rectWidth < 2 && rectWidth > -width) rectWidth = 2;
                 if (rectWidth < 0.5) return;
 
-                const eventG = waveG.append('g')
-                  .style('cursor', 'pointer')
-                  .on('click', (e: any) => { e.stopPropagation(); onSelectEvent(decoder.id, eIdx); });
+                  const eventG = waveG.append('g')
+                    .style('cursor', 'pointer')
+                    .on('click', (e: any) => { e.stopPropagation(); onSelectEvent(decoder.id, eIdx); })
+                    .on('mousemove', (e: any) => {
+                      try {
+                        const rect = containerRef.current?.getBoundingClientRect();
+                        if (!rect) return;
+                        const clientX = (e as MouseEvent).clientX;
+                        const clientY = (e as MouseEvent).clientY;
+                        const title = `${decoder.type} ${event.label || ''}`.trim();
+                        const start = convertTicksToUnit(event.startTime, data.timescale, displayUnit).toFixed(3);
+                        const end = convertTicksToUnit(event.endTime, data.timescale, displayUnit).toFixed(3);
+                        const body = `${event.data ?? ''}\n${start} - ${end} ${displayUnit}`;
+                        setTooltip({ x: clientX - rect.left + 8, y: clientY - rect.top + 8, title, body });
+                      } catch { /* ignore */ }
+                    })
+                    .on('mouseout', () => setTooltip(null));
 
                 const eventHeight = Math.max(12, headerHeight - 8);
                 const eventY = currentY + (headerHeight - eventHeight) / 2;
@@ -607,8 +634,26 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
         currentY += headerHeight;
 
         if (!group.collapsed) {
+          // draw a faint box behind the group's signal rows to indicate membership
+          const signalsCount = group.signalNames.length;
+          const boxY = currentY;
+          const boxHeight = Math.max(0, signalsCount * (signalHeight + signalSpacing) - signalSpacing);
+          const groupAccent = '#3b82f6'; // light blue
+          waveG.append('rect')
+            .attr('x', 0)
+            .attr('y', boxY - 4)
+            .attr('width', width)
+            .attr('height', boxHeight + 8)
+            .attr('rx', 6)
+            .attr('fill', groupAccent)
+            .attr('fill-opacity', 0.04)
+            .attr('stroke', groupAccent)
+            .attr('stroke-opacity', 0.22)
+            .attr('stroke-width', 1.2)
+            .attr('pointer-events', 'none');
+
           group.signalNames.forEach(sigName => {
-            renderSignal(sigName, currentY, '#00ff00', '#aaa');
+            renderSignal(sigName, currentY, '#60a5fa', '#60a5fa');
             currentY += signalHeight + signalSpacing;
           });
         } else {
@@ -664,7 +709,21 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
             .on('click', (e) => {
               e.stopPropagation();
               onSelectEvent(decoder.id, eIdx);
-            });
+            })
+            .on('mousemove', (e: any) => {
+              try {
+                const rect = containerRef.current?.getBoundingClientRect();
+                if (!rect) return;
+                const clientX = (e as MouseEvent).clientX;
+                const clientY = (e as MouseEvent).clientY;
+                const title = `${decoder.type} ${event.label || ''}`.trim();
+                const start = convertTicksToUnit(event.startTime, data.timescale, displayUnit).toFixed(3);
+                const end = convertTicksToUnit(event.endTime, data.timescale, displayUnit).toFixed(3);
+                const body = `${event.data ?? ''}\n${start} - ${end} ${displayUnit}`;
+                setTooltip({ x: clientX - rect.left + 8, y: clientY - rect.top + 8, title, body });
+              } catch { /* ignore */ }
+            })
+            .on('mouseout', () => setTooltip(null));
 
           const labelUpper = (event.label || '').toString().toUpperCase();
           const dataUpper = (event.data || '').toString().toUpperCase();
@@ -845,7 +904,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
   }, [data, visibleSignals, displayUnit, protocolDecoders, selectedEvent, selectedSignalName, groups, onToggleGroup, onSelectEvent, onSelectSignal, zoom]);
 
   return (
-    <div className="w-full bg-[#141414] rounded-lg border border-[#333] p-4 flex flex-col gap-4">
+    <div className="relative w-full bg-[#141414] rounded-lg border border-[#333] p-4 flex flex-col gap-4">
       <div className="flex justify-between items-center">
         <div className="flex gap-4 text-[10px] text-gray-500 font-mono uppercase tracking-widest">
           <div className="flex items-center gap-2">
@@ -882,6 +941,15 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
       <div className="w-full overflow-y-auto max-h-[600px] custom-scrollbar border-t border-[#333] pt-4">
         <div ref={containerRef} className="w-full" />
       </div>
+
+      {tooltip && (
+        <div style={{ left: tooltip.x, top: tooltip.y }} className="absolute z-50 pointer-events-none">
+          <div className="bg-black text-white p-2 rounded text-xs font-mono whitespace-pre-line max-w-[320px] border border-[#333]">
+            <div className="font-bold mb-1">{tooltip.title}</div>
+            <div>{tooltip.body}</div>
+          </div>
+        </div>
+      )}
 
       <div className="flex justify-between items-center px-2 py-1 bg-[#0a0a0a] rounded border border-[#333] text-[9px] font-mono text-gray-500">
         <div className="flex items-center gap-4">

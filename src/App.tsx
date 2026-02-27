@@ -369,7 +369,17 @@ export default function App() {
   // Represent protocols as groups so they appear in the waveform grouping area
   const protocolGroups: SignalGroup[] = decodedProtocols.map(p => ({
     id: `proto_${p.id}`,
-    name: `${p.type}`,
+    name: (() => {
+      if (p.type === 'Avalon') {
+        // try to infer module name from first signal (drop last segment)
+        const s = p.signals.find(s => !!s);
+        if (s && s.includes('.')) {
+          const parts = s.split('.');
+          if (parts.length >= 2) return `${p.type} (${parts[parts.length - 2]})`;
+        }
+      }
+      return `${p.type}`;
+    })(),
     signalNames: p.signals.filter(s => !!s),
     collapsed: p.collapsed ?? true
   }));
