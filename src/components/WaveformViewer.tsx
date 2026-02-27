@@ -19,6 +19,10 @@ interface WaveformProps {
   onSelectEvent: (protocolId: string, index: number) => void;
   onSelectSignal: (name: string | null) => void;
   onToggleGroup: (id: string) => void;
+  selectedGroupId?: string | null;
+  onSelectGroup?: (id: string | null) => void;
+  onDeleteSignal?: (name: string) => void;
+  onDeleteGroup?: (id: string) => void;
 }
 
 export const WaveformViewer: React.FC<WaveformProps> = ({ 
@@ -32,6 +36,10 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
   onSelectEvent,
   onSelectSignal,
   onToggleGroup
+  , selectedGroupId,
+  onSelectGroup,
+  onDeleteSignal,
+  onDeleteGroup
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [tooltip, setTooltip] = useState<null | { x: number; y: number; title: string; body: string }>(null);
@@ -533,9 +541,9 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
       // 1. Render Groups
       groups.forEach(group => {
         // Group Header
-        const headerG = waveG.append('g')
-          .style('cursor', 'pointer')
-          .on('click', () => onToggleGroup(group.id));
+          const headerG = waveG.append('g')
+            .style('cursor', 'pointer')
+            .on('click', (event: any) => { event.stopPropagation(); onToggleGroup(group.id); if (onSelectGroup) onSelectGroup(group.id); });
 
         const headerHeight = signalHeight; // make header same height as a signal row
         headerG.append('text')
@@ -557,8 +565,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
           .attr('stroke', '#333')
           .attr('stroke-dasharray', '2,2');
 
-        // Ensure header clicks don't fallthrough to surface-level svg click (which inserts markers)
-        headerG.on('click', (event: any) => { event.stopPropagation(); onToggleGroup(group.id); });
+        // header click already handled above (toggle + select)
 
         // If this group corresponds to a protocol group (id prefixed with 'proto_'),
         // render its decoded events on the header row so they remain visible when collapsed.
@@ -873,6 +880,13 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
         svg.transition()
           .duration(500)
           .call(zoomBehavior.transform, d3.zoomIdentity);
+      }
+      if (e.key === 'Delete') {
+        if (selectedSignalName && onDeleteSignal) {
+          onDeleteSignal(selectedSignalName);
+        } else if (selectedGroupId && onDeleteGroup) {
+          onDeleteGroup(selectedGroupId);
+        }
       }
     };
 

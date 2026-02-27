@@ -34,6 +34,7 @@ export default function App() {
   const [visibleSignals, setVisibleSignals] = useState<string[]>([]);
   const [groups, setGroups] = useState<SignalGroup[]>([]);
   const [protocols, setProtocols] = useState<ProtocolConfig[]>([]);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<{ protocolId: string; index: number } | null>(null);
   const [selectedSignalName, setSelectedSignalName] = useState<string | null>(null);
@@ -120,6 +121,23 @@ export default function App() {
     }
 
     setGroups(groups.map(g => g.id === id ? { ...g, collapsed: !g.collapsed } : g));
+  };
+
+  const handleSelectGroup = (id: string | null) => {
+    setSelectedGroupId(prev => prev === id ? null : id);
+    // clear selected signal when selecting a group
+    setSelectedSignalName(null);
+  };
+
+  const handleDeleteSignal = (name: string) => {
+    setVisibleSignals(prev => prev.filter(s => s !== name));
+    setGroups(prev => prev.map(g => ({ ...g, signalNames: g.signalNames.filter(n => n !== name) })));
+    if (selectedSignalName === name) setSelectedSignalName(null);
+  };
+
+  const handleDeleteGroup = (id: string) => {
+    removeGroup(id);
+    if (selectedGroupId === id) setSelectedGroupId(null);
   };
 
   const updateGroup = (id: string, updates: Partial<SignalGroup>) => {
@@ -807,6 +825,10 @@ export default function App() {
                 onSelectEvent={(protocolId, index) => setSelectedEvent({ protocolId, index })}
                 onSelectSignal={setSelectedSignalName}
                 onToggleGroup={toggleGroupCollapse}
+                selectedGroupId={selectedGroupId}
+                onSelectGroup={handleSelectGroup}
+                onDeleteSignal={handleDeleteSignal}
+                onDeleteGroup={handleDeleteGroup}
               />
 
               {/* Decoded Data Table */}
