@@ -162,8 +162,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
             .attr('height', 18)
             .attr('rx', 3)
             .attr('fill', '#000')
-            .attr('fill-opacity', 0.45)
-            .attr('pointer-events', 'none');
+            .attr('fill-opacity', 0.45);
 
           labelsGroup.append('text')
             .attr('x', xPos + 8)
@@ -171,8 +170,38 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
             .attr('fill', c.color)
             .style('font-size', '11px')
             .style('font-family', 'var(--font-mono)')
-            .attr('pointer-events', 'none')
             .text(`${convertTicksToUnit(c.time, data.timescale, displayUnit).toFixed(3)} ${displayUnit}`);
+
+          // interactive hit area for marker tooltip (shows distances to other markers)
+          labelsGroup.append('rect')
+            .attr('x', xPos + 4)
+            .attr('y', -8)
+            .attr('width', 120)
+            .attr('height', 18)
+            .attr('fill', 'transparent')
+            .style('cursor', 'pointer')
+            .on('mousemove', (e: any) => {
+              try {
+                const rect = containerRef.current?.getBoundingClientRect();
+                if (!rect) return;
+                const clientX = (e as MouseEvent).clientX;
+                const clientY = (e as MouseEvent).clientY;
+                const others = cs.filter(o => o.id !== c.id);
+                if (others.length === 0) {
+                  setTooltip({ x: clientX - rect.left + 8, y: clientY - rect.top + 8, title: 'Marker', body: 'No other markers' });
+                  return;
+                }
+                const distances = others.map(o => ({ id: o.id, time: o.time, delta: Math.abs(o.time - c.time) }));
+                distances.sort((a, b) => a.delta - b.delta);
+                const lines = distances.map(d => {
+                  const deltaUnit = convertTicksToUnit(d.delta, data.timescale, displayUnit).toFixed(3);
+                  const tUnit = convertTicksToUnit(d.time, data.timescale, displayUnit).toFixed(3);
+                  return `${deltaUnit} ${displayUnit} → ${tUnit} ${displayUnit}`;
+                });
+                setTooltip({ x: clientX - rect.left + 8, y: clientY - rect.top + 8, title: 'Distances', body: lines.join('\n') });
+              } catch { /* ignore */ }
+            })
+            .on('mouseout', () => setTooltip(null));
         }
 
         // show delta between last two cursors on top timeline
