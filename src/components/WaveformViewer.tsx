@@ -337,12 +337,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
             const val = getSignalValueAt(signal, tStart);
             const hex = binToHex(val);
 
-            const busG = waveG.append('g')
-              .style('cursor', 'pointer')
-              .on('click', (e) => {
-                e.stopPropagation();
-                onSelectSignal(isSelected ? null : signal.name);
-              });
+            const busG = waveG.append('g');
 
             busG.append('rect')
               .attr('x', xStart)
@@ -455,12 +450,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
             .attr('stroke', isSelected ? '#f27d26' : color)
             .attr('stroke-width', isSelected ? 2 : 1.5)
             .attr('stroke-linejoin', 'round')
-            .attr('d', d3.line())
-            .style('cursor', 'pointer')
-            .on('click', (e) => {
-              e.stopPropagation();
-              onSelectSignal(isSelected ? null : signal.name);
-            });
+            .attr('d', d3.line());
         }
       };
 
@@ -872,8 +862,6 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
     svg.on('click', (e) => {
       if (!currentXRef.current) return;
       const [mx, my] = d3.pointer(e);
-      // Only insert markers when clicking on the top timeline area (avoid inserting when interacting with signals)
-      if (my > margin.top) return;
       const clickTime = currentXRef.current.invert(mx - margin.left);
       const innerY = my - margin.top;
 
