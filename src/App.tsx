@@ -19,6 +19,7 @@ interface ProtocolConfig {
     cpol?: number;
     cpha?: number;
   };
+  collapsed?: boolean;
 }
 
 interface SignalGroup {
@@ -41,6 +42,14 @@ export default function App() {
   const loadVcdContent = useCallback((content: string) => {
     const parsed = parseVCD(content);
     setVcdData(parsed);
+    // Debug: log parsed signal summary to help track missing signals like led_out
+    try {
+      console.log('VCD parsed signals count:', parsed.signals.size);
+      // show first 30 signal names
+      console.log('First signals:', Array.from(parsed.signals.keys()).slice(0, 30));
+      const ledKey = Array.from(parsed.signals.keys()).find(k => k.toLowerCase().endsWith('.led_out') || k.toLowerCase().endsWith('led_out'));
+      if (ledKey) console.log('led_out signal values (first 10):', parsed.signals.get(ledKey)?.values.slice(0, 10));
+    } catch (e) { console.warn('Signal debug log failed', e); }
     setVisibleSignals(Array.from(parsed.signals.keys()).slice(0, 10));
 
     // Auto-detect a sensible display unit based on timescale + duration
@@ -54,6 +63,10 @@ export default function App() {
     setGroups([]);
     setSelectedEvent(null);
     setSelectedSignalName(null);
+    // Auto-detect protocols for convenience
+    try {
+      autoDetectProtocols(parsed);
+    } catch {}
   }, []);
 
   const handleFileUpload = useCallback((file: File) => {
@@ -77,6 +90,16 @@ export default function App() {
     return () => { if (typeof window !== 'undefined') window.removeEventListener('message', handler as any); };
   }, [loadVcdContent]);
 
+  // Notify the extension that the webview is ready to receive messages.
+  React.useEffect(() => {
+    try {
+      const anyWindow = window as any;
+      if (anyWindow && typeof anyWindow.acquireVsCodeApi === 'function') {
+        anyWindow.acquireVsCodeApi().postMessage({ type: 'ready' });
+      }
+    } catch (e) {}
+  }, []);
+
   const addGroup = () => {
     const newGroup: SignalGroup = {
       id: Math.random().toString(36).substr(2, 9),
@@ -88,6 +111,14 @@ export default function App() {
   };
 
   const toggleGroupCollapse = (id: string) => {
+    // If this is a protocol group (proto_<id>), toggle collapsed on protocols state
+    const protoPrefix = 'proto_';
+    if (id.startsWith(protoPrefix)) {
+      const pid = id.substring(protoPrefix.length);
+      setProtocols(protocols.map(p => p.id === pid ? { ...p, collapsed: !p.collapsed } : p));
+      return;
+    }
+
     setGroups(groups.map(g => g.id === id ? { ...g, collapsed: !g.collapsed } : g));
   };
 
@@ -125,34 +156,41 @@ export default function App() {
 
   const autoGroupSignals = () => {
     if (!vcdData) return;
-    
     const allSignals = Array.from(vcdData.signals.keys());
+
+    // 1) Suffix-based grouping (existing behavior)
     const potentialGroups = new Map<string, string[]>();
-    
-    // Regex for common suffixes: _0, [0], 0
     const suffixRegex = /(.+?)(?:_(\d+)|\[(\d+)\]|(\d+))$/;
-    
     allSignals.forEach((sig: string) => {
       const match = sig.match(suffixRegex);
       if (match) {
         const prefix = match[1];
-        if (!potentialGroups.has(prefix)) {
-          potentialGroups.set(prefix, []);
-        }
+        if (!potentialGroups.has(prefix)) potentialGroups.set(prefix, []);
         potentialGroups.get(prefix)!.push(sig);
       }
     });
-    
+
+    // 2) Hierarchy-based grouping using dot separators (parent path before last dot)
+    const parentMap = new Map<string, string[]>();
+    allSignals.forEach((sig: string) => {
+      const idx = sig.lastIndexOf('.');
+      if (idx !== -1) {
+        const parent = sig.substring(0, idx);
+        if (!parentMap.has(parent)) parentMap.set(parent, []);
+        parentMap.get(parent)!.push(sig);
+      }
+    });
+
     const newGroups: SignalGroup[] = [];
     const signalsToMove = new Set<string>();
-    
+
+    // Create suffix groups first (keep original sorting by numeric suffix)
     potentialGroups.forEach((sigs: string[], prefix: string) => {
       if (sigs.length > 1) {
         newGroups.push({
           id: Math.random().toString(36).substr(2, 9),
           name: prefix.replace(/[._\[]$/, ''),
           signalNames: sigs.sort((a: string, b: string) => {
-            // Sort numeric suffixes descending (31 downto 0)
             const aNum = parseInt(a.match(/\d+$/)?.[0] || '0');
             const bNum = parseInt(b.match(/\d+$/)?.[0] || '0');
             return bNum - aNum;
@@ -162,7 +200,21 @@ export default function App() {
         sigs.forEach(s => signalsToMove.add(s));
       }
     });
-    
+
+    // Then create hierarchy groups for parent paths, but skip signals already grouped
+    parentMap.forEach((sigs: string[], parent: string) => {
+      const filtered = sigs.filter(s => !signalsToMove.has(s));
+      if (filtered.length > 1) {
+        newGroups.push({
+          id: Math.random().toString(36).substr(2, 9),
+          name: parent,
+          signalNames: filtered.sort(),
+          collapsed: true
+        });
+        filtered.forEach(s => signalsToMove.add(s));
+      }
+    });
+
     if (newGroups.length > 0) {
       setGroups([...groups, ...newGroups]);
       setVisibleSignals(visibleSignals.filter(s => !signalsToMove.has(s)));
@@ -182,9 +234,91 @@ export default function App() {
       id: Math.random().toString(36).substr(2, 9),
       type: 'UART',
       signals: [],
-      config: { baudRate: 9600 }
+      config: { baudRate: 9600 },
+      collapsed: false
     };
     setProtocols([...protocols, newProtocol]);
+  };
+
+  const autoDetectProtocols = (vcd?: VCDData) => {
+    const data = vcd || vcdData;
+    if (!data) return;
+
+    const detected: ProtocolConfig[] = [];
+
+    // Helper: normalize name parts
+    const leaf = (name: string) => {
+      const parts = name.split('.');
+      return parts[parts.length - 1].toLowerCase();
+    };
+
+    // Build parent map to group signals by common prefix
+    const parentMap = new Map<string, string[]>();
+    Array.from(data.signals.keys()).forEach(name => {
+      const idx = name.lastIndexOf('.');
+      const parent = idx === -1 ? '' : name.substring(0, idx);
+      if (!parentMap.has(parent)) parentMap.set(parent, []);
+      parentMap.get(parent)!.push(name);
+    });
+
+    // 1) Detect SPI: look for parent groups with sclk + (mosi|miso)
+    parentMap.forEach((names, parent) => {
+      const lower = new Set(names.map(n => leaf(n)));
+      const hasSCLK = Array.from(lower).some(n => n.includes('sclk') || n === 'sclk' || n === 'clk_s');
+      const hasMOSI = Array.from(lower).some(n => n.includes('mosi') || n === 'mosi');
+      const hasMISO = Array.from(lower).some(n => n.includes('miso') || n === 'miso');
+      const hasCS = Array.from(lower).some(n => n === 'cs' || n.includes('cs') || n.includes('chipselect'));
+      if (hasSCLK) {
+        // find signal full names
+        const sclk = names.find(n => leaf(n).includes('sclk') || leaf(n) === 'sclk' || leaf(n) === 'clk_s');
+        const mosi = names.find(n => leaf(n).includes('mosi') || leaf(n) === 'mosi');
+        const miso = names.find(n => leaf(n).includes('miso') || leaf(n) === 'miso');
+        const cs = names.find(n => leaf(n) === 'cs' || leaf(n).includes('cs') || leaf(n).includes('chipselect'));
+        if (sclk) {
+          detected.push({ id: Math.random().toString(36).substr(2,9), type: 'SPI', signals: [sclk, mosi || '', miso || '', cs || ''], config: { cpol: 0, cpha: 0 } });
+        }
+      }
+    });
+
+    // 2) Detect UART: look for signals named *rx or *tx or global names containing 'uart'
+    const allNames = Array.from(data.signals.keys());
+    const rx = allNames.find(n => /(^|\.|_)(rx|rxd|uart_rx)$/.test(n.toLowerCase()));
+    const tx = allNames.find(n => /(^|\.|_)(tx|txd|uart_tx)$/.test(n.toLowerCase()));
+    const uartCandidate = rx || tx || allNames.find(n => n.toLowerCase().includes('uart'));
+    if (uartCandidate) {
+      detected.push({ id: Math.random().toString(36).substr(2,9), type: 'UART', signals: [uartCandidate], config: { baudRate: 9600 } });
+    }
+
+    // 3) Detect Avalon-like bus: parent with clk + addr + read/write
+    parentMap.forEach((names, parent) => {
+      const lower = new Set(names.map(n => leaf(n)));
+      const hasCLK = Array.from(lower).some(n => n === 'clk' || n.includes('clk') || n.includes('clock'));
+      const hasADDR = Array.from(lower).some(n => n.includes('addr') || n.includes('address'));
+      const hasREAD = Array.from(lower).some(n => n === 'read' || n.includes('read'));
+      const hasWRITE = Array.from(lower).some(n => n === 'write' || n.includes('write'));
+      if (hasCLK && (hasADDR && (hasREAD || hasWRITE))) {
+        const clk = names.find(n => leaf(n) === 'clk' || leaf(n).includes('clk') || leaf(n).includes('clock'));
+        const addr = names.find(n => leaf(n).includes('addr') || leaf(n).includes('address'));
+        const read = names.find(n => leaf(n) === 'read' || leaf(n).includes('read'));
+        const write = names.find(n => leaf(n) === 'write' || leaf(n).includes('write'));
+        const wrdata = names.find(n => leaf(n).includes('wrdata') || leaf(n).includes('writedata'));
+        const rddata = names.find(n => leaf(n).includes('rddata') || leaf(n).includes('readdata'));
+        const wait = names.find(n => leaf(n).includes('wait') || leaf(n).includes('waitrequest'));
+        const rdvalid = names.find(n => leaf(n).includes('rdvalid') || leaf(n).includes('readdatavalid'));
+        if (clk) {
+          detected.push({ id: Math.random().toString(36).substr(2,9), type: 'Avalon', signals: [clk, addr || '', read || '', write || '', wrdata || '', rddata || '', wait || '', rdvalid || ''], config: {}, collapsed: true });
+        }
+      }
+    });
+
+    if (detected.length > 0) {
+      setProtocols(detected);
+
+      // Remove detected protocol signals from visibleSignals to avoid duplicate rows
+      const detectedSignals = new Set<string>();
+      detected.forEach(p => p.signals.forEach(s => { if (s) detectedSignals.add(s); }));
+      setVisibleSignals(prev => prev.filter(s => !detectedSignals.has(s)));
+    }
   };
 
   const updateProtocol = (id: string, updates: Partial<ProtocolConfig>) => {
@@ -231,6 +365,14 @@ export default function App() {
     }
     return { ...p, decoded };
   });
+
+  // Represent protocols as groups so they appear in the waveform grouping area
+  const protocolGroups: SignalGroup[] = decodedProtocols.map(p => ({
+    id: `proto_${p.id}`,
+    name: `${p.type}`,
+    signalNames: p.signals.filter(s => !!s),
+    collapsed: p.collapsed ?? true
+  }));
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-[#e4e3e0] font-sans selection:bg-[#f27d26] selection:text-black">
@@ -292,12 +434,21 @@ export default function App() {
                 <Cpu size={16} />
                 <h2 className="text-xs font-bold uppercase tracking-widest font-mono">Protocols</h2>
               </div>
-              <button 
-                onClick={addProtocol}
-                className="p-1 hover:bg-[#222] rounded text-gray-400 hover:text-white transition-colors"
-              >
-                <Plus size={16} />
-              </button>
+              <div className="flex gap-2">
+                <button 
+                  onClick={() => autoDetectProtocols()}
+                  title="Auto Detect Protocols"
+                  className="p-1 hover:bg-[#222] rounded text-emerald-500 hover:text-emerald-400 transition-colors text-[10px] font-mono border border-emerald-500/30 px-2"
+                >
+                  AUTO
+                </button>
+                <button 
+                  onClick={addProtocol}
+                  className="p-1 hover:bg-[#222] rounded text-gray-400 hover:text-white transition-colors"
+                >
+                  <Plus size={16} />
+                </button>
+              </div>
             </div>
 
             <div className="space-y-4">
@@ -639,7 +790,7 @@ export default function App() {
                 data={vcdData} 
                 visibleSignals={visibleSignals}
                 displayUnit={displayUnit}
-                groups={groups}
+                groups={[...groups, ...protocolGroups]}
                 protocolDecoders={decodedProtocols}
                 selectedEvent={selectedEvent}
                 selectedSignalName={selectedSignalName}

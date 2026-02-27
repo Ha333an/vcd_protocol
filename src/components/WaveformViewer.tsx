@@ -265,6 +265,15 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
         labelText.append('tspan')
           .text(label);
 
+        // Debug badge: show number of recorded values for this signal (helps diagnose empty rows)
+        labelText.append('tspan')
+          .attr('x', -10)
+          .attr('dy', '1.2em')
+          .attr('fill', '#6b7280')
+          .style('font-size', '8px')
+          .style('opacity', 0.7)
+          .text(`(${signal.values.length})`);
+
         if (freq) {
           labelText.append('tspan')
             .attr('x', -10)
@@ -336,41 +345,100 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
           return;
         }
 
-        const points: [number, number][] = [];
-        
-        let currentVal = '0';
-        for (const v of signal.values) {
-          if (v.time <= xMin) currentVal = v.value;
-          else break;
+        // Render X/Z states as colored rectangles, and draw waveform path only for 0/1 values
+        const transitionTimes = new Set<number>();
+        signal.values.forEach(v => transitionTimes.add(v.time));
+        const sortedTimes = Array.from(transitionTimes).sort((a, b) => a - b);
+        const visibleTimes = [xMin, ...sortedTimes.filter(t => t > xMin && t < xMax), xMax];
+
+        // Draw X/Z background segments first
+        for (let i = 0; i < visibleTimes.length - 1; i++) {
+          const tStart = visibleTimes[i];
+          const tEnd = visibleTimes[i+1];
+          const xStart = currentX(tStart);
+          const xEnd = currentX(tEnd);
+          const rectWidth = xEnd - xStart;
+          if (rectWidth < 0.5) continue;
+
+          const valRaw = getSignalValueAt(signal, tStart);
+          const val = (valRaw || '').toLowerCase();
+
+          // Only render X/Z if it's actually present in the signal's recorded values
+          // at this exact time, or if the first recorded value itself is X/Z
+          // (treat initial explicit unknowns as valid to show)
+          const hasExplicitAtTime = signal.values.some(v => v.time === tStart && (v.value.toLowerCase() === 'x' || v.value.toLowerCase() === 'z'));
+          const firstIsUnknown = signal.values.length > 0 && (signal.values[0].value.toLowerCase() === 'x' || signal.values[0].value.toLowerCase() === 'z') && tStart <= signal.values[0].time;
+
+          if ((val === 'x' || val === 'z') && (hasExplicitAtTime || firstIsUnknown)) {
+            const fillColor = val === 'x' ? '#ef4444' : '#3b82f6';
+            waveG.append('rect')
+              .attr('x', xStart)
+              .attr('y', y)
+              .attr('width', rectWidth)
+              .attr('height', signalHeight)
+              .attr('fill', fillColor)
+              .attr('fill-opacity', 0.12)
+              .attr('pointer-events', 'none');
+
+            // optional small label for visibility
+            if (rectWidth > 18) {
+              waveG.append('text')
+                .attr('x', xStart + rectWidth / 2)
+                .attr('y', y + signalHeight / 2)
+                .attr('text-anchor', 'middle')
+                .attr('alignment-baseline', 'middle')
+                .attr('fill', fillColor)
+                .style('font-size', '10px')
+                .style('font-family', 'var(--font-mono)')
+                .attr('pointer-events', 'none')
+                .text(val.toUpperCase());
+            }
+          }
         }
 
-        let lastY = (currentVal === '1' ? 0 : signalHeight) + y;
-        points.push([currentX(xMin), lastY]);
+        // Build waveform path using only '0' and '1' intervals
+        const pathPoints: [number, number][] = [];
+        let haveStarted = false;
+        let lastY = 0;
 
-        signal.values.forEach((v) => {
-          if (v.time < xMin) return;
-          if (v.time > xMax) return;
+        for (let i = 0; i < visibleTimes.length - 1; i++) {
+          const tStart = visibleTimes[i];
+          const tEnd = visibleTimes[i+1];
+          const xStart = currentX(tStart);
+          const xEnd = currentX(tEnd);
 
-          const valY = (v.value === '1' ? 0 : signalHeight) + y;
-          points.push([currentX(v.time), lastY]);
-          points.push([currentX(v.time), valY]);
-          lastY = valY;
-        });
-        
-        points.push([currentX(xMax), lastY]);
+          const val = getSignalValueAt(signal, tStart);
+          if (val === '0' || val === '1') {
+            const valY = (val === '1' ? 0 : signalHeight) + y;
+            if (!haveStarted) {
+              // start path at left edge
+              pathPoints.push([currentX(xMin), valY]);
+              lastY = valY;
+              haveStarted = true;
+            }
+            // vertical transition at tStart
+            pathPoints.push([xStart, lastY]);
+            pathPoints.push([xStart, valY]);
+            lastY = valY;
+            // continue to end of interval
+            pathPoints.push([xEnd, lastY]);
+          }
+        }
 
-        waveG.append('path')
-          .datum(points)
-          .attr('fill', 'none')
-          .attr('stroke', isSelected ? '#f27d26' : color)
-          .attr('stroke-width', isSelected ? 2 : 1.5)
-          .attr('stroke-linejoin', 'round')
-          .attr('d', d3.line())
-          .style('cursor', 'pointer')
-          .on('click', (e) => {
-            e.stopPropagation();
-            onSelectSignal(isSelected ? null : signal.name);
-          });
+        if (pathPoints.length > 0) {
+          waveG.append('path')
+            .datum(pathPoints)
+            .attr('fill', 'none')
+            .attr('stroke', isSelected ? '#f27d26' : color)
+            .attr('stroke-width', isSelected ? 2 : 1.5)
+            .attr('stroke-linejoin', 'round')
+            .attr('d', d3.line())
+            .style('cursor', 'pointer')
+            .on('click', (e) => {
+              e.stopPropagation();
+              onSelectSignal(isSelected ? null : signal.name);
+            });
+        }
       };
 
       const renderBus = (group: { name: string; signalNames: string[] }, y: number) => {
@@ -456,25 +524,87 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
           .style('cursor', 'pointer')
           .on('click', () => onToggleGroup(group.id));
 
+        const headerHeight = signalHeight; // make header same height as a signal row
         headerG.append('text')
           .attr('x', -140)
-          .attr('y', currentY + 10)
+          .attr('y', currentY + headerHeight / 2)
           .attr('fill', '#10b981') // emerald-500 hex
           .style('font-size', '10px')
           .style('font-weight', 'bold')
           .style('font-family', 'var(--font-mono)')
           .style('text-transform', 'uppercase')
+          .attr('alignment-baseline', 'middle')
           .text(`${group.collapsed ? '▶' : '▼'} ${group.name}`);
 
         headerG.append('line')
           .attr('x1', -140)
-          .attr('y1', currentY + 15)
+          .attr('y1', currentY + headerHeight)
           .attr('x2', width)
-          .attr('y2', currentY + 15)
+          .attr('y2', currentY + headerHeight)
           .attr('stroke', '#333')
           .attr('stroke-dasharray', '2,2');
 
-        currentY += 20;
+        // Ensure header clicks don't fallthrough to surface-level svg click (which inserts markers)
+        headerG.on('click', (event: any) => { event.stopPropagation(); onToggleGroup(group.id); });
+
+        // If this group corresponds to a protocol group (id prefixed with 'proto_'),
+        // render its decoded events on the header row so they remain visible when collapsed.
+        try {
+          const protoPrefix = 'proto_';
+          const protoId = group.id && group.id.startsWith(protoPrefix) ? group.id.substring(protoPrefix.length) : null;
+          if (protoId && protocolDecoders && protocolDecoders.length > 0) {
+            const decoder = protocolDecoders.find(p => p.id === protoId);
+            if (decoder && decoder.decoded && decoder.decoded.length > 0) {
+              const headerEventsY = currentY + (headerHeight - 12) / 2; // vertically center a 12px tall event
+              const [xMin, xMax] = currentX.domain();
+              decoder.decoded.forEach((event, eIdx) => {
+                if (event.endTime < xMin || event.startTime > xMax) return;
+                const xStart = Math.max(currentX(event.startTime), 0);
+                const xEnd = Math.min(currentX(event.endTime), width);
+                let rectWidth = xEnd - xStart;
+                if (rectWidth < 2 && rectWidth > -width) rectWidth = 2;
+                if (rectWidth < 0.5) return;
+
+                const eventG = waveG.append('g')
+                  .style('cursor', 'pointer')
+                  .on('click', (e: any) => { e.stopPropagation(); onSelectEvent(decoder.id, eIdx); });
+
+                const eventHeight = Math.max(12, headerHeight - 8);
+                const eventY = currentY + (headerHeight - eventHeight) / 2;
+
+                const labelUpper = (event.label || '').toString().toUpperCase();
+                const dataUpper = (event.data || '').toString().toUpperCase();
+                const isWrite = labelUpper.startsWith('WR') || dataUpper.includes('WRITE');
+                const isRead = labelUpper.startsWith('RD') || dataUpper.includes('READ');
+                const eventColor = isRead ? '#10b981' : (isWrite ? '#f27d26' : '#f27d26');
+
+                eventG.append('rect')
+                  .attr('x', xStart)
+                  .attr('y', eventY)
+                  .attr('width', rectWidth)
+                  .attr('height', eventHeight)
+                  .attr('fill', eventColor)
+                  .attr('fill-opacity', 0.25)
+                  .attr('stroke', eventColor)
+                  .attr('stroke-width', 1);
+
+                if (rectWidth > 30) {
+                  eventG.append('text')
+                    .attr('x', xStart + rectWidth / 2)
+                    .attr('y', eventY + eventHeight / 2 + 2)
+                    .attr('text-anchor', 'middle')
+                    .attr('alignment-baseline', 'middle')
+                    .attr('fill', '#fff')
+                    .style('font-size', '10px')
+                    .style('font-family', 'var(--font-mono)')
+                      .text(event.label);
+                }
+              });
+            }
+          }
+        } catch (err) { /* ignore render errors for protocols */ }
+
+        currentY += headerHeight;
 
         if (!group.collapsed) {
           group.signalNames.forEach(sigName => {
@@ -536,14 +666,20 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
               onSelectEvent(decoder.id, eIdx);
             });
 
+          const labelUpper = (event.label || '').toString().toUpperCase();
+          const dataUpper = (event.data || '').toString().toUpperCase();
+          const isWrite = labelUpper.startsWith('WR') || dataUpper.includes('WRITE');
+          const isRead = labelUpper.startsWith('RD') || dataUpper.includes('READ');
+          const eventColor = isRead ? '#10b981' : (isWrite ? '#f27d26' : '#f27d26');
+
           eventG.append('rect')
             .attr('x', xStart)
             .attr('y', yOffset)
             .attr('width', rectWidth)
             .attr('height', signalHeight)
-            .attr('fill', '#f27d26')
+            .attr('fill', eventColor)
             .attr('fill-opacity', isSelected ? 0.6 : 0.2)
-            .attr('stroke', '#f27d26')
+            .attr('stroke', eventColor)
             .attr('stroke-width', isSelected ? 2 : 1);
 
           if (rectWidth > 20) {
@@ -587,6 +723,8 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
     svg.on('click', (e) => {
       if (!currentXRef.current) return;
       const [mx, my] = d3.pointer(e);
+      // Only insert markers when clicking on the top timeline area (avoid inserting when interacting with signals)
+      if (my > margin.top) return;
       const clickTime = currentXRef.current.invert(mx - margin.left);
       const innerY = my - margin.top;
 
@@ -621,7 +759,9 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
     });
 
     const getSignalValueAt = (signal: VCDSignal, time: number): string => {
-      let lastVal = 'x';
+      if (!signal.values || signal.values.length === 0) return 'x';
+      // Use the first known value as the initial value (avoid returning 'x' before first transition)
+      let lastVal = signal.values[0].value;
       for (const v of signal.values) {
         if (v.time > time) return lastVal;
         lastVal = v.value;
@@ -638,6 +778,24 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
       });
 
     svg.call(zoomBehavior);
+    // If a protocol event is selected, add a marker for it (avoid duplicates).
+    if (selectedEvent && protocolDecoders) {
+      const key = `${selectedEvent.protocolId}-${selectedEvent.index}`;
+      const decoder = protocolDecoders.find(d => d.id === selectedEvent.protocolId);
+      if (decoder && decoder.decoded && decoder.decoded[selectedEvent.index]) {
+        const evt = decoder.decoded[selectedEvent.index];
+        const exists = cursorsRef.current.find(c => (c as any).eventKey === key);
+        if (!exists) {
+          const color = '#f27d26';
+          cursorsRef.current.push({ id: cursorIdRef.current++, time: evt.startTime, color, eventKey: key } as any);
+        }
+      }
+    } else if (!selectedEvent) {
+      // remove any event markers when deselected
+      cursorsRef.current = cursorsRef.current.filter(c => !(c as any).eventKey);
+      cursorIdRef.current = cursorsRef.current.length > 0 ? Math.max(...cursorsRef.current.map(c => c.id)) + 1 : 0;
+    }
+
     render(x);
 
     // expose clear function to UI

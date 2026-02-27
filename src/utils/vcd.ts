@@ -18,7 +18,8 @@ export interface VCDData {
 
 export function parseVCD(content: string): VCDData {
   const signals = new Map<string, VCDSignal>();
-  const idToSignal = new Map<string, VCDSignal>();
+  // Some VCDs reuse short ids across scopes; map id -> array of signals to handle duplicates
+  const idToSignals = new Map<string, VCDSignal[]>();
   let timescale = '1ns';
   let currentTime = 0;
   let maxTime = 0;
@@ -65,7 +66,8 @@ export function parseVCD(content: string): VCDData {
       
       const signal: VCDSignal = { id, name: fullName, type, size, values: [] };
       signals.set(fullName, signal);
-      idToSignal.set(id, signal);
+      if (!idToSignals.has(id)) idToSignals.set(id, []);
+      idToSignals.get(id)!.push(signal);
     }
   }
 
@@ -86,13 +88,13 @@ export function parseVCD(content: string): VCDData {
         const parts = line.split(/\s+/);
         const value = parts[0].substring(1);
         const id = parts[1];
-        const sig = idToSignal.get(id);
-        if (sig) sig.values.push({ time: currentTime, value });
+        const sigs = idToSignals.get(id);
+        if (sigs) sigs.forEach(s => s.values.push({ time: currentTime, value }));
       } else {
         const value = line[0];
         const id = line.substring(1);
-        const sig = idToSignal.get(id);
-        if (sig) sig.values.push({ time: currentTime, value });
+        const sigs = idToSignals.get(id);
+        if (sigs) sigs.forEach(s => s.values.push({ time: currentTime, value }));
       }
     }
   }
@@ -380,6 +382,9 @@ export function decodeAvalon(
   }
 
   // We iterate through CLK rising edges
+  let lastReadSeen = false;
+  let lastWriteSeen = false;
+
   for (let i = 1; i < clk.values.length; i++) {
     const prev = clk.values[i - 1];
     const curr = clk.values[i];
@@ -389,16 +394,21 @@ export function decodeAvalon(
 
     const time = curr.time;
 
-    // Check waitrequest
+    // Check waitrequest at the edge
     const isWaiting = waitrequest ? getSignalValueAt(waitrequest, time) === '1' : false;
     if (isWaiting) continue;
 
-    const isRead = read ? getSignalValueAt(read, time) === '1' : false;
-    const isWrite = write ? getSignalValueAt(write, time) === '1' : false;
+    // Sample read/write slightly before the rising edge to capture setup-time assertions
+    const setupOffset = Math.max(1, Math.floor(clockPeriod / 4));
+    const sampleTime = Math.max(0, time - setupOffset);
 
-    if (isWrite) {
-      const addr = address ? getSignalValueAt(address, time) : 'X';
-      const data = writedata ? getSignalValueAt(writedata, time) : 'X';
+    const sampledRead = read ? getSignalValueAt(read, sampleTime) === '1' : false;
+    const sampledWrite = write ? getSignalValueAt(write, sampleTime) === '1' : false;
+
+    // Emit write when asserted at sample time and wasn't asserted previously
+    if (sampledWrite && !lastWriteSeen) {
+      const addr = address ? getSignalValueAt(address, sampleTime) : 'X';
+      const data = writedata ? getSignalValueAt(writedata, sampleTime) : 'X';
       events.push({
         startTime: time,
         endTime: time + clockPeriod,
@@ -407,10 +417,9 @@ export function decodeAvalon(
       });
     }
 
-    if (isRead) {
-      const addr = address ? getSignalValueAt(address, time) : 'X';
-      // For read, we might need to wait for readdatavalid
-      // For now, just log the request
+    // Emit read request when asserted at sample time and wasn't asserted previously
+    if (sampledRead && !lastReadSeen) {
+      const addr = address ? getSignalValueAt(address, sampleTime) : 'X';
       events.push({
         startTime: time,
         endTime: time + clockPeriod,
@@ -419,7 +428,10 @@ export function decodeAvalon(
       });
     }
 
-    // Handle readdatavalid separately if it's a different cycle
+    lastReadSeen = sampledRead;
+    lastWriteSeen = sampledWrite;
+
+    // Handle readdatavalid at the edge (data valid may appear later)
     const isDataValid = readdatavalid ? getSignalValueAt(readdatavalid, time) === '1' : false;
     if (isDataValid) {
       const data = readdata ? getSignalValueAt(readdata, time) : 'X';
