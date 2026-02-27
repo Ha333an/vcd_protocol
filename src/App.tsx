@@ -254,7 +254,7 @@ export default function App() {
 
     // Build parent map to group signals by common prefix
     const parentMap = new Map<string, string[]>();
-    Array.from(data.signals.keys()).forEach(name => {
+    Array.from(data.signals.keys()).forEach((name: string) => {
       const idx = name.lastIndexOf('.');
       const parent = idx === -1 ? '' : name.substring(0, idx);
       if (!parentMap.has(parent)) parentMap.set(parent, []);
@@ -281,7 +281,7 @@ export default function App() {
     });
 
     // 2) Detect UART: look for signals named *rx or *tx or global names containing 'uart'
-    const allNames = Array.from(data.signals.keys());
+    const allNames = Array.from(data.signals.keys()) as string[];
     const rx = allNames.find(n => /(^|\.|_)(rx|rxd|uart_rx)$/.test(n.toLowerCase()));
     const tx = allNames.find(n => /(^|\.|_)(tx|txd|uart_tx)$/.test(n.toLowerCase()));
     const uartCandidate = rx || tx || allNames.find(n => n.toLowerCase().includes('uart'));
