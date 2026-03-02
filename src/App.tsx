@@ -995,50 +995,6 @@ export default function App() {
                   movedSignalName={movedSignalName}
                 />
               </div>
-
-              {/* Decoded Data Table - doesn't grow */}
-              <div className="flex-shrink-0">
-                {decodedProtocols.some(p => p.decoded.length > 0) && (
-                  <section className="bg-[#141414] border border-[#333] rounded-lg overflow-hidden">
-                    <div className="p-4 border-b border-[#333] bg-[#1a1a1a] flex items-center gap-2">
-                      <ChevronRight size={16} className="text-[#f27d26]" />
-                      <h2 className="text-xs font-bold uppercase tracking-widest font-mono">Decoded Transactions</h2>
-                    </div>
-                    <div className="max-h-[300px] overflow-y-auto">
-                      <table className="w-full text-left font-mono text-xs">
-                        <thead className="sticky top-0 bg-[#141414] text-gray-500 uppercase text-[10px]">
-                          <tr>
-                            <th className="p-3 border-b border-[#333]">Time</th>
-                            <th className="p-3 border-b border-[#333]">Protocol</th>
-                            <th className="p-3 border-b border-[#333]">Data</th>
-                            <th className="p-3 border-b border-[#333]">Label</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-[#222]">
-                          {decodedProtocols.flatMap(p => p.decoded.map((event, i) => {
-                            const isSelected = selectedEvent?.protocolId === p.id && selectedEvent?.index === i;
-                            return (
-                              <tr 
-                                key={`${p.id}-${i}`} 
-                                onClick={() => setSelectedEvent({ protocolId: p.id, index: i })}
-                                className={cn(
-                                  "cursor-pointer transition-colors",
-                                  isSelected ? "bg-[#f27d26]/20 text-white" : "hover:bg-[#1a1a1a]"
-                                )}
-                              >
-                                <td className="p-3 text-gray-500">{event.startTime} {vcdData.timescale}</td>
-                                <td className="p-3 text-[#f27d26] font-bold">{p.type}</td>
-                                <td className="p-3">{event.data}</td>
-                                <td className="p-3 text-emerald-500">{event.label}</td>
-                              </tr>
-                            );
-                          }))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </section>
-                )}
-              </div>
             </div>
           )}
         </div>
