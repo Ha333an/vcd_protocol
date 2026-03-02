@@ -1007,7 +1007,7 @@ export default function App() {
           {vcdData && <span>Memory: {(JSON.stringify(vcdData).length / 1024 / 1024).toFixed(2)} MB</span>}
         </div>
         <div>
-          v1.0.0-BETA
+          v1.0.3
         </div>
       </footer>
     </div>
