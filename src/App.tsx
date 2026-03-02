@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { Upload, Cpu, Activity, Settings, Plus, Trash2, ChevronRight, FileText } from 'lucide-react';
+import { Upload, Cpu, Activity, Settings, Plus, Trash2, ChevronRight, ChevronLeft, FileText } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { parseVCD, VCDData, decodeUART, decodeSPI, decodeAvalon, DecodedEvent, calculateSignalFrequency, calculateSignalMeasurements, detectBestDisplayUnit } from './utils/vcd';
 import { WaveformViewer } from './components/WaveformViewer';
@@ -34,11 +34,35 @@ export default function App() {
   const [groups, setGroups] = useState<SignalGroup[]>([]);
   const [protocols, setProtocols] = useState<ProtocolConfig[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
-   const [sidebarSelectedSignals, setSidebarSelectedSignals] = useState<string[]>([]);
+  
   const [isDragging, setIsDragging] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<{ protocolId: string; index: number } | null>(null);
   const [selectedSignalName, setSelectedSignalName] = useState<string | null>(null);
+  const [movedSignalName, setMovedSignalName] = useState<string | null>(null);
   const [displayUnit, setDisplayUnit] = useState<string>('ns');
+  const [sidebarWidth, setSidebarWidth] = useState(320);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [signalSearchTerm, setSignalSearchTerm] = useState<string>('');
+
+  const handleResizeStart = React.useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = sidebarWidth;
+
+    const handleMouseMove = (me: MouseEvent) => {
+      const delta = me.clientX - startX;
+      const newWidth = Math.max(200, Math.min(600, startWidth + delta));
+      setSidebarWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  }, [sidebarWidth]);
 
   const loadVcdContent = useCallback((content: string) => {
     const parsed = parseVCD(content);
@@ -135,9 +159,18 @@ export default function App() {
     if (selectedSignalName === name) setSelectedSignalName(null);
   };
 
+  
+
   const handleDeleteGroup = (id: string) => {
     removeGroup(id);
     if (selectedGroupId === id) setSelectedGroupId(null);
+  };
+
+  const handleClearAllSignals = () => {
+    setVisibleSignals([]);
+    setGroups([]);
+    setSelectedSignalName(null);
+    setSelectedGroupId(null);
   };
 
   const updateGroup = (id: string, updates: Partial<SignalGroup>) => {
@@ -169,6 +202,60 @@ export default function App() {
     // Add back to ungrouped visible signals
     if (!visibleSignals.includes(signalName)) {
       setVisibleSignals([...visibleSignals, signalName]);
+    }
+  };
+
+  const handleReorderSignal = (signalName: string, toGroupId: string | null, toIndex: number) => {
+    const oldGroup = groups.find(g => g.signalNames.includes(signalName));
+    const oldGroupId = oldGroup ? oldGroup.id : null;
+
+    if (oldGroupId === toGroupId) {
+      // reorder within same container
+      if (toGroupId === null) {
+        const arr = [...visibleSignals.filter(s => s !== signalName)];
+        const idx = Math.max(0, Math.min(toIndex, arr.length));
+        arr.splice(idx, 0, signalName);
+        setVisibleSignals(arr);
+      } else {
+        setGroups(prev => prev.map(g => {
+          if (g.id !== toGroupId) return g;
+          const arr = g.signalNames.filter(s => s !== signalName);
+          const idx = Math.max(0, Math.min(toIndex, arr.length));
+          arr.splice(idx, 0, signalName);
+          return { ...g, signalNames: arr };
+        }));
+      }
+      return;
+    }
+
+    // remove from old
+    if (oldGroupId === null) {
+      setVisibleSignals(prev => prev.filter(s => s !== signalName));
+    } else {
+      setGroups(prev => prev.map(g => g.id === oldGroupId ? { ...g, signalNames: g.signalNames.filter(s => s !== signalName) } : g));
+    }
+
+    // insert into new
+    if (toGroupId === null) {
+      setVisibleSignals(prev => {
+        const arr = [...prev];
+        const idx = Math.max(0, Math.min(toIndex, arr.length));
+        arr.splice(idx, 0, signalName);
+        // flash moved signal
+        setMovedSignalName(signalName);
+        setTimeout(() => setMovedSignalName(null), 1100);
+        return arr;
+      });
+    } else {
+      setGroups(prev => prev.map(g => {
+        if (g.id !== toGroupId) return g;
+        const arr = [...g.signalNames];
+        const idx = Math.max(0, Math.min(toIndex, arr.length));
+        arr.splice(idx, 0, signalName);
+        setMovedSignalName(signalName);
+        setTimeout(() => setMovedSignalName(null), 1100);
+        return { ...g, signalNames: arr };
+      }));
     }
   };
 
@@ -479,9 +566,23 @@ export default function App() {
         </div>
       </header>
 
-      <main className="p-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
-        {/* Sidebar: Signal Selection & Protocol Config */}
-        <div className="lg:col-span-1 space-y-6">
+      <main className="flex h-[calc(100vh-120px)]">
+        {/* Resizable Left Sidebar */}
+        <div className="flex flex-col border-r border-[#333] bg-[#0a0a0a] transition-all duration-300" style={{ width: sidebarCollapsed ? '50px' : `${sidebarWidth}px` }}>
+          {/* Sidebar Toggle Button */}
+          <div className="flex-shrink-0 p-2 flex justify-end border-b border-[#333]">
+            <button
+              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+              className="p-1 hover:bg-[#222] rounded text-gray-400 hover:text-[#f27d26] transition-colors"
+              title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            >
+              {sidebarCollapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
+            </button>
+          </div>
+          
+          {/* Sidebar Content with Scrollbar */}
+          {!sidebarCollapsed && (
+          <div className="flex-1 overflow-y-auto p-6 space-y-6">
           {/* Visible Signals (moved to top) */}
           {vcdData && (
             <section className="bg-[#141414] border border-[#333] rounded-lg p-4 max-h-[400px] overflow-y-auto">
@@ -505,8 +606,17 @@ export default function App() {
                   </button>
                 </div>
               </div>
+              <input
+                type="text"
+                placeholder="Search signals..."
+                value={signalSearchTerm}
+                onChange={(e) => setSignalSearchTerm(e.target.value)}
+                className="w-full bg-[#0a0a0a] border border-[#333] rounded px-2 py-1.5 text-xs font-mono text-gray-400 placeholder-gray-600 mb-3 focus:outline-none focus:border-[#f27d26] transition-colors"
+              />
               <div className="space-y-1">
-                {Array.from(vcdData.signals.keys()).map((name: string) => (
+                {Array.from(vcdData.signals.keys())
+                  .filter(name => name.toLowerCase().includes(signalSearchTerm.toLowerCase()))
+                  .map((name: string) => (
                   <label key={name} className="flex items-center gap-2 p-1 hover:bg-[#222] rounded cursor-pointer group">
                     <input 
                       type="checkbox"
@@ -704,6 +814,13 @@ export default function App() {
                 >
                   <Plus size={16} />
                 </button>
+                <button 
+                  onClick={handleClearAllSignals}
+                  title="Clear all signals and groups"
+                  className="p-1 hover:bg-[#222] rounded text-gray-400 hover:text-red-400 transition-colors"
+                >
+                  <Trash2 size={16} />
+                </button>
               </div>
             </div>
 
@@ -753,10 +870,21 @@ export default function App() {
 
           {/* Signal Visibility */}
           {/* moved Visible Signals to top of sidebar */}
+          </div>
+          )}
+
+          {/* Resize Handle */}
+          {!sidebarCollapsed && (
+          <div
+            onMouseDown={handleResizeStart}
+            className="w-1 bg-[#333] hover:bg-[#f27d26] cursor-col-resize transition-colors flex-shrink-0"
+            title="Drag to resize sidebar"
+          />
+          )}
         </div>
 
         {/* Main Viewer Area */}
-        <div className="lg:col-span-3">
+        <div className={cn("flex-1 overflow-y-auto flex flex-col", sidebarCollapsed ? "p-3" : "p-6")}>
           {!vcdData ? (
             <div 
               onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
@@ -778,130 +906,139 @@ export default function App() {
               <p className="text-gray-500 font-mono text-sm">or click LOAD VCD in the header</p>
             </div>
           ) : (
-            <div className="space-y-6">
-              {/* Measurement Bar */}
-              <AnimatePresence>
-                {selectedSignalName && vcdData.signals.get(selectedSignalName) && (
-                  <motion.div 
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: 'auto', opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    className="bg-[#1a1a1a] border border-[#f27d26]/30 rounded-lg p-4 overflow-hidden"
-                  >
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-3">
-                        <Activity size={16} className="text-[#f27d26]" />
-                        <h3 className="text-xs font-bold uppercase tracking-widest font-mono text-white">
-                          Measurements: <span className="text-[#f27d26]">{selectedSignalName}</span>
-                        </h3>
+            <div className={cn("flex-1 flex flex-col", sidebarCollapsed ? "space-y-2" : "space-y-6")}>
+              {/* Measurement Bar - doesn't grow */}
+              <div className="flex-shrink-0">
+                <AnimatePresence>
+                  {selectedSignalName && vcdData.signals.get(selectedSignalName) && (
+                    <motion.div 
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      className="bg-[#1a1a1a] border border-[#f27d26]/30 rounded-lg p-4 overflow-hidden"
+                    >
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-3">
+                          <Activity size={16} className="text-[#f27d26]" />
+                          <h3 className="text-xs font-bold uppercase tracking-widest font-mono text-white">
+                            Measurements: <span className="text-[#f27d26]">{selectedSignalName}</span>
+                          </h3>
+                        </div>
+                        <button 
+                          onClick={() => setSelectedSignalName(null)}
+                          className="text-gray-500 hover:text-white transition-colors"
+                        >
+                          ×
+                        </button>
                       </div>
-                      <button 
-                        onClick={() => setSelectedSignalName(null)}
-                        className="text-gray-500 hover:text-white transition-colors"
-                      >
-                        ×
-                      </button>
-                    </div>
-                    
-                    {(() => {
-                      const signal = vcdData.signals.get(selectedSignalName)!;
-                      const measurements = calculateSignalMeasurements(signal, vcdData.timescale);
                       
-                      if (measurements) {
-                        return (
-                          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                            {[
-                              { label: 'Frequency', value: measurements.frequency },
-                              { label: 'Period', value: measurements.avgPeriod },
-                              { label: 'Pos Pulse', value: measurements.avgPosPulse },
-                              { label: 'Neg Pulse', value: measurements.avgNegPulse },
-                              { label: 'Duty Cycle', value: measurements.dutyCycle },
-                            ].map(stat => (
-                              <div key={stat.label} className="bg-[#0a0a0a] p-2 rounded border border-[#333]">
-                                <div className="text-[9px] text-gray-500 uppercase font-mono mb-1">{stat.label}</div>
-                                <div className="text-sm font-mono text-emerald-500 font-bold">{stat.value}</div>
-                              </div>
-                            ))}
-                          </div>
-                        );
-                      } else if (signal.size > 1) {
-                        return (
-                          <div className="text-xs text-gray-500 font-mono italic flex items-center gap-2">
-                            <Settings size={14} />
-                            Timing measurements are currently only available for single-bit signals (clocks, enables, etc).
-                          </div>
-                        );
-                      } else {
-                        return (
-                          <div className="text-xs text-gray-500 font-mono italic flex items-center gap-2">
-                            <Activity size={14} />
-                            Not enough transitions detected to calculate timing measurements for this signal.
-                          </div>
-                        );
-                      }
-                    })()}
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
-              <WaveformViewer 
-                data={vcdData} 
-                visibleSignals={visibleSignals}
-                displayUnit={displayUnit}
-                groups={[...groups, ...protocolGroups]}
-                protocolDecoders={decodedProtocols}
-                selectedEvent={selectedEvent}
-                selectedSignalName={selectedSignalName}
-                onSelectEvent={(protocolId, index) => setSelectedEvent({ protocolId, index })}
-                onSelectSignal={setSelectedSignalName}
-                onToggleGroup={toggleGroupCollapse}
-                selectedGroupId={selectedGroupId}
-                onSelectGroup={handleSelectGroup}
-                onDeleteSignal={handleDeleteSignal}
-                onDeleteGroup={handleDeleteGroup}
-              />
-
-              {/* Decoded Data Table */}
-              {decodedProtocols.some(p => p.decoded.length > 0) && (
-                <section className="bg-[#141414] border border-[#333] rounded-lg overflow-hidden">
-                  <div className="p-4 border-b border-[#333] bg-[#1a1a1a] flex items-center gap-2">
-                    <ChevronRight size={16} className="text-[#f27d26]" />
-                    <h2 className="text-xs font-bold uppercase tracking-widest font-mono">Decoded Transactions</h2>
-                  </div>
-                  <div className="max-h-[300px] overflow-y-auto">
-                    <table className="w-full text-left font-mono text-xs">
-                      <thead className="sticky top-0 bg-[#141414] text-gray-500 uppercase text-[10px]">
-                        <tr>
-                          <th className="p-3 border-b border-[#333]">Time</th>
-                          <th className="p-3 border-b border-[#333]">Protocol</th>
-                          <th className="p-3 border-b border-[#333]">Data</th>
-                          <th className="p-3 border-b border-[#333]">Label</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-[#222]">
-                        {decodedProtocols.flatMap(p => p.decoded.map((event, i) => {
-                          const isSelected = selectedEvent?.protocolId === p.id && selectedEvent?.index === i;
+                      {(() => {
+                        const signal = vcdData.signals.get(selectedSignalName)!;
+                        const measurements = calculateSignalMeasurements(signal, vcdData.timescale);
+                        
+                        if (measurements) {
                           return (
-                            <tr 
-                              key={`${p.id}-${i}`} 
-                              onClick={() => setSelectedEvent({ protocolId: p.id, index: i })}
-                              className={cn(
-                                "cursor-pointer transition-colors",
-                                isSelected ? "bg-[#f27d26]/20 text-white" : "hover:bg-[#1a1a1a]"
-                              )}
-                            >
-                              <td className="p-3 text-gray-500">{event.startTime} {vcdData.timescale}</td>
-                              <td className="p-3 text-[#f27d26] font-bold">{p.type}</td>
-                              <td className="p-3">{event.data}</td>
-                              <td className="p-3 text-emerald-500">{event.label}</td>
-                            </tr>
+                            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                              {[
+                                { label: 'Frequency', value: measurements.frequency },
+                                { label: 'Period', value: measurements.avgPeriod },
+                                { label: 'Pos Pulse', value: measurements.avgPosPulse },
+                                { label: 'Neg Pulse', value: measurements.avgNegPulse },
+                                { label: 'Duty Cycle', value: measurements.dutyCycle },
+                              ].map(stat => (
+                                <div key={stat.label} className="bg-[#0a0a0a] p-2 rounded border border-[#333]">
+                                  <div className="text-[9px] text-gray-500 uppercase font-mono mb-1">{stat.label}</div>
+                                  <div className="text-sm font-mono text-emerald-500 font-bold">{stat.value}</div>
+                                </div>
+                              ))}
+                            </div>
                           );
-                        }))}
-                      </tbody>
-                    </table>
-                  </div>
-                </section>
-              )}
+                        } else if (signal.size > 1) {
+                          return (
+                            <div className="text-xs text-gray-500 font-mono italic flex items-center gap-2">
+                              <Settings size={14} />
+                              Timing measurements are currently only available for single-bit signals (clocks, enables, etc).
+                            </div>
+                          );
+                        } else {
+                          return (
+                            <div className="text-xs text-gray-500 font-mono italic flex items-center gap-2">
+                              <Activity size={14} />
+                              Not enough transitions detected to calculate timing measurements for this signal.
+                            </div>
+                          );
+                        }
+                      })()}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
+              {/* Waveform Viewer - grows to fill available space */}
+              <div className="flex-1 overflow-hidden">
+                <WaveformViewer 
+                  data={vcdData} 
+                  visibleSignals={visibleSignals}
+                  displayUnit={displayUnit}
+                  groups={[...groups, ...protocolGroups]}
+                  protocolDecoders={decodedProtocols}
+                  selectedEvent={selectedEvent}
+                  selectedSignalName={selectedSignalName}
+                  onSelectEvent={(protocolId, index) => setSelectedEvent({ protocolId, index })}
+                  onSelectSignal={(name) => { setSelectedSignalName(name); }}
+                  onReorderSignal={handleReorderSignal}
+                  onToggleGroup={toggleGroupCollapse}
+                  selectedGroupId={selectedGroupId}
+                  onSelectGroup={handleSelectGroup}
+                  onDeleteSignal={handleDeleteSignal}
+                  onDeleteGroup={handleDeleteGroup}
+                  movedSignalName={movedSignalName}
+                />
+              </div>
+
+              {/* Decoded Data Table - doesn't grow */}
+              <div className="flex-shrink-0">
+                {decodedProtocols.some(p => p.decoded.length > 0) && (
+                  <section className="bg-[#141414] border border-[#333] rounded-lg overflow-hidden">
+                    <div className="p-4 border-b border-[#333] bg-[#1a1a1a] flex items-center gap-2">
+                      <ChevronRight size={16} className="text-[#f27d26]" />
+                      <h2 className="text-xs font-bold uppercase tracking-widest font-mono">Decoded Transactions</h2>
+                    </div>
+                    <div className="max-h-[300px] overflow-y-auto">
+                      <table className="w-full text-left font-mono text-xs">
+                        <thead className="sticky top-0 bg-[#141414] text-gray-500 uppercase text-[10px]">
+                          <tr>
+                            <th className="p-3 border-b border-[#333]">Time</th>
+                            <th className="p-3 border-b border-[#333]">Protocol</th>
+                            <th className="p-3 border-b border-[#333]">Data</th>
+                            <th className="p-3 border-b border-[#333]">Label</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#222]">
+                          {decodedProtocols.flatMap(p => p.decoded.map((event, i) => {
+                            const isSelected = selectedEvent?.protocolId === p.id && selectedEvent?.index === i;
+                            return (
+                              <tr 
+                                key={`${p.id}-${i}`} 
+                                onClick={() => setSelectedEvent({ protocolId: p.id, index: i })}
+                                className={cn(
+                                  "cursor-pointer transition-colors",
+                                  isSelected ? "bg-[#f27d26]/20 text-white" : "hover:bg-[#1a1a1a]"
+                                )}
+                              >
+                                <td className="p-3 text-gray-500">{event.startTime} {vcdData.timescale}</td>
+                                <td className="p-3 text-[#f27d26] font-bold">{p.type}</td>
+                                <td className="p-3">{event.data}</td>
+                                <td className="p-3 text-emerald-500">{event.label}</td>
+                              </tr>
+                            );
+                          }))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                )}
+              </div>
             </div>
           )}
         </div>

@@ -1,7 +1,3 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
-
 # VCD Protocol Analyzer
 
 VCD Protocol Analyzer is a lightweight viewer designed to open VCD (Value Change Dump) files inside Visual Studio Code and help you inspect waveforms and protocol activity. It automatically detects common bus and serial protocols and displays them as grouped, interactive overlays on top of the waveform.
@@ -32,3 +28,11 @@ Prerequisites: Node.js (and npm)
 For packaging as a VS Code extension, build the extension bundle (`npm run build:extension`) and create a VSIX (`vsce package`).
 
 Contributions and issues are welcome — more decoders and UX improvements planned.
+
+## Keyboard shortcuts
+
+- Hold `Alt` (Windows/Linux) or `Option` (macOS) and press `ArrowUp` / `ArrowDown` to move the currently selected signal up or down.
+- Press `F` to fit the timeline to the view.
+- Press `Delete` to remove the selected signal or selected group.
+
+Note: If mouse drag/reorder feels imprecise on your system, the Alt/Option + Arrow shortcuts provide a quick keyboard alternative for reordering signals.

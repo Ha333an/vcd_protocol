@@ -1,7 +1,7 @@
 {
   "name": "vcd-analyzer",
   "private": true,
-  "version": "1.0.2",
+  "version": "1.0.3",
   "icon": "icon.png",
   "scripts": {
     "start": "npm run dev",

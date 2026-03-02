@@ -17,18 +17,21 @@ interface WaveformProps {
   }[];
   selectedEvent: { protocolId: string; index: number } | null;
   selectedSignalName: string | null;
+  
   onSelectEvent: (protocolId: string, index: number) => void;
   onSelectSignal: (name: string | null) => void;
   onToggleGroup: (id: string) => void;
+  onReorderSignal?: (signalName: string, toGroupId: string | null, toIndex: number) => void;
+  movedSignalName?: string | null;
   selectedGroupId?: string | null;
   onSelectGroup?: (id: string | null) => void;
   onDeleteSignal?: (name: string) => void;
   onDeleteGroup?: (id: string) => void;
 }
 
-export const WaveformViewer: React.FC<WaveformProps> = ({ 
-  data, 
-  visibleSignals, 
+export const WaveformViewer: React.FC<WaveformProps> = ({
+  data,
+  visibleSignals,
   displayUnit,
   onChangeDisplayUnit,
   groups,
@@ -37,11 +40,13 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
   selectedSignalName,
   onSelectEvent,
   onSelectSignal,
-  onToggleGroup
-  , selectedGroupId,
+  onToggleGroup,
+  selectedGroupId,
   onSelectGroup,
   onDeleteSignal,
-  onDeleteGroup
+  onDeleteGroup,
+  onReorderSignal,
+  movedSignalName,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [tooltip, setTooltip] = useState<null | { x: number; y: number; title: string; body: string }>(null);
@@ -271,10 +276,10 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
 
       let currentY = 0;
 
-      const renderSignal = (sigName: string, y: number, color: string = '#00ff00', labelColor: string = '#888') => {
+      const renderSignal = (sigName: string, y: number, color: string = '#00ff00', labelColor: string = '#888', groupId: string | null = null) => {
         const signal = data.signals.get(sigName);
         if (!signal) return;
-        signalPositions.push({ type: 'signal', name: signal.name, y, height: signalHeight, signal });
+          signalPositions.push({ type: 'signal', name: signal.name, y, height: signalHeight, signal, groupId });
 
         const [xMin, xMax] = currentX.domain();
         const isSelected = selectedSignalName === signal.name;
@@ -287,7 +292,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
 
         const labelGroup = waveG.append('g')
           .style('cursor', 'pointer')
-          .on('click', (e) => {
+          .on('click', (e: any) => {
             e.stopPropagation();
             onSelectSignal(isSelected ? null : signal.name);
           })
@@ -335,6 +340,8 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
             .style('opacity', 0.6)
             .text(` (${freq})`);
         }
+
+        // (Removed up/down buttons) drag-to-reorder is used instead.
 
         if (isSelected) {
           waveG.append('rect')
@@ -723,7 +730,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
             .attr('pointer-events', 'none');
 
           group.signalNames.forEach(sigName => {
-            renderSignal(sigName, currentY, '#60a5fa', '#60a5fa');
+            renderSignal(sigName, currentY, '#60a5fa', '#60a5fa', group.id);
             currentY += signalHeight + signalSpacing;
           });
         } else {
@@ -736,7 +743,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
 
       // 2. Render Ungrouped Signals
       visibleSignals.forEach(sigName => {
-        renderSignal(sigName, currentY);
+        renderSignal(sigName, currentY, '#00ff00', '#888', null);
         currentY += signalHeight + signalSpacing;
       });
 
@@ -891,6 +898,8 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
     svg.on('click', (e) => {
       if (!currentXRef.current) return;
       const [mx, my] = d3.pointer(e);
+      // only allow adding markers when clicking inside the waveform area (not on the left labels)
+      if (mx <= margin.left) return;
       const clickTime = currentXRef.current.invert(mx - margin.left);
       const innerY = my - margin.top;
 
@@ -964,6 +973,25 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
 
     render(x);
 
+    // If a movedSignalName is provided, animate a highlight on that row
+    try {
+      if (movedSignalName && movedSignalName.length > 0) {
+        const target = signalPositions.find(p => p.type === 'signal' && p.name === movedSignalName);
+        if (target) {
+          const highlight = g.append('rect')
+            .attr('x', 0)
+            .attr('y', target.y - 5)
+            .attr('width', width)
+            .attr('height', target.height + 10)
+            .attr('fill', '#f27d26')
+            .attr('fill-opacity', 0.6)
+            .attr('pointer-events', 'none');
+
+          highlight.transition().duration(900).attr('fill-opacity', 0).remove();
+        }
+      }
+    } catch { /* ignore animation errors */ }
+
     // expose clear function to UI
     clearCursorsRef.current = () => {
       cursorsRef.current = [];
@@ -974,7 +1002,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
       if (currentXRef.current) render(currentXRef.current);
     };
 
-    // Fit to screen shortcut (F key)
+    // Fit to screen shortcut (F key) + move selected with Alt+ArrowUp/Down
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() === 'f') {
         svg.transition()
@@ -988,12 +1016,41 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
           onDeleteGroup(selectedGroupId);
         }
       }
-    };
 
+      // Move selected signal with Alt+ArrowUp/ArrowDown
+      if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && e.altKey && selectedSignalName && onReorderSignal) {
+        const rows = signalPositions.filter(p => p.type === 'signal');
+        const idx = rows.findIndex(r => r.name === selectedSignalName);
+        if (idx === -1) return;
+
+        const curr = rows[idx];
+        const currGroupId = curr.groupId || null;
+
+        // determine destination index within same group
+        let destIdx = idx + (e.key === 'ArrowUp' ? -1 : 1);
+        if (destIdx < 0) destIdx = 0;
+        if (destIdx > rows.length - 1) destIdx = rows.length - 1;
+
+        // if moving across group boundaries, compute destGroupId and index
+        const destRow = rows[destIdx];
+        const destGroupId = destRow ? (destRow.groupId || null) : null;
+
+        // compute index among rows in dest group
+        const rowsInDest = rows.filter(r => (r.groupId || null) === destGroupId);
+        let destIndexInGroup = rowsInDest.length;
+        if (destRow) {
+          destIndexInGroup = rowsInDest.findIndex(r => r.name === destRow.name);
+        }
+
+        onReorderSignal(selectedSignalName, destGroupId, destIndexInGroup);
+      }
+    }
+
+    // attach keyboard handler
     window.addEventListener('keydown', handleKeyDown);
 
-    // Initial render + hover tooltip for signals
-    svg.on('mousemove', (e) => {
+    // Hover tooltip and cursor line
+    svg.on('mousemove', (e: any) => {
       if (!currentXRef.current) return;
       const [mx, my] = d3.pointer(e);
       const time = currentXRef.current.invert(mx - margin.left);
@@ -1001,13 +1058,10 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
         setHoverTime(time);
         cursorLine.attr('x1', currentXRef.current(time)).attr('x2', currentXRef.current(time)).style('opacity', 1);
 
-        // Only show signal hover tooltip when pointer is over waveform area (not over labels)
         if (mx > margin.left) {
           const innerY = my - margin.top;
-          // find vertically aligned signal row
           let row = signalPositions.find(p => innerY >= p.y && innerY <= p.y + p.height);
           if (!row) {
-            // pick closest by vertical distance
             let best: any = null; let bestD = Infinity;
             for (const p of signalPositions) {
               const cy = p.y + p.height / 2;
@@ -1017,56 +1071,44 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
             row = best;
           }
 
-          if (row && (row.type === 'signal' || row.type === 'bus')) {
+          if (row && row.type === 'signal') {
             try {
               const timeUnit = convertTicksToUnit(time, data.timescale, displayUnit).toFixed(3);
+              const sig: VCDSignal = row.signal;
+              const val = getSignalValueAt(sig, time);
               let hex = 'X';
               let dec: string | number = 'X';
 
-              if (row.type === 'signal') {
-                const sig: VCDSignal = row.signal;
-                const val = getSignalValueAt(sig, time);
-                if (sig.size > 1) {
-                  // multi-bit represented as binary string
-                  hex = binToHex(val);
-                  if (hex !== 'X') dec = BigInt('0x' + hex).toString();
-                } else {
-                  // single bit
-                  hex = val === '1' ? '0x1' : (val === '0' ? '0x0' : 'X');
-                  dec = val === '1' ? 1 : (val === '0' ? 0 : 'X');
-                }
-                const short = (sig.name.split('.').pop() || sig.name);
-                setTooltip({ x: mx - margin.left + 8 + margin.left, y: my - margin.top + 8 + margin.top, title: short, body: `Time: ${timeUnit} ${displayUnit}\nHex: ${hex}\nDec: ${dec}` });
-              } else if (row.type === 'bus') {
-                const names: string[] = row.signalNames;
-                let binStr = '';
-                for (const n of names) {
-                  const s = data.signals.get(n);
-                  binStr += s ? getSignalValueAt(s, time) : 'x';
-                }
-                hex = binToHex(binStr);
+              if (sig.size > 1) {
+                hex = binToHex(val);
                 if (hex !== 'X') dec = BigInt('0x' + hex).toString();
-                setTooltip({ x: mx - margin.left + 8 + margin.left, y: my - margin.top + 8 + margin.top, title: row.name, body: `Time: ${timeUnit} ${displayUnit}\nHex: ${hex}\nDec: ${dec}` });
+              } else {
+                hex = val === '1' ? '0x1' : (val === '0' ? '0x0' : 'X');
+                dec = val === '1' ? 1 : (val === '0' ? 0 : 'X');
               }
+              const short = (sig.name.split('.').pop() || sig.name);
+              setTooltip({ x: mx + 8, y: my + 8, title: short, body: `Time: ${timeUnit} ${displayUnit}\nHex: ${hex}\nDec: ${dec}` });
             } catch { /* ignore */ }
           }
         }
       } else {
         setHoverTime(null);
         cursorLine.style('opacity', 0);
+        setTooltip(null);
       }
     });
 
     svg.on('mouseleave', () => {
       setHoverTime(null);
       cursorLine.style('opacity', 0);
+      setTooltip(null);
     });
 
     return () => {
       svg.on('.zoom', null);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [data, visibleSignals, displayUnit, protocolDecoders, selectedEvent, selectedSignalName, groups, onToggleGroup, onSelectEvent, onSelectSignal, zoom]);
+  }, [data, visibleSignals, displayUnit, protocolDecoders, selectedEvent, selectedSignalName, groups, onToggleGroup, onSelectEvent, onSelectSignal, zoom, movedSignalName, onReorderSignal]);
 
   return (
     <div className="relative w-full bg-[#141414] rounded-lg border border-[#333] p-4 flex flex-col gap-4">
