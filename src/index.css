@@ -13,8 +13,8 @@ body {
 
 /* Custom scrollbar for that technical feel */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 10px;
+  height: 10px;
 }
 
 ::-webkit-scrollbar-track {
@@ -23,9 +23,17 @@ body {
 
 ::-webkit-scrollbar-thumb {
   background: #333;
-  border-radius: 3px;
+  border-radius: 5px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: #444;
+}
+
+.sidebar-scroll-left {
+  direction: rtl;
+}
+
+.sidebar-scroll-left > * {
+  direction: ltr;
 }

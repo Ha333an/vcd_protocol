@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
+import { Maximize2, ZoomIn, ZoomOut } from 'lucide-react';
 import { VCDData, VCDSignal, DecodedEvent, binToHex, calculateSignalFrequency, convertTicksToUnit, getSignalValueAt } from '../utils/vcd';
 
 const PROTOCOL_READ_COLOR = '#10b981';
@@ -51,18 +52,27 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
   onReorderSignal,
   movedSignalName,
 }) => {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const axisContainerRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [tooltip, setTooltip] = useState<null | { x: number; y: number; title: string; body: string; accentColor?: string }>(null);
   const [zoom, setZoom] = useState({ start: 0, end: data.maxTime });
   const [hoverTime, setHoverTime] = useState<number | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const horizontalScrollRef = useRef<HTMLDivElement>(null);
+  const horizontalScrollSpacerRef = useRef<HTMLDivElement>(null);
+  const horizontalScrollContentWidthRef = useRef(0);
+  const isSyncingHorizontalScrollRef = useRef(false);
   const currentXRef = useRef<d3.ScaleLinear<number, number> | null>(null);
   const zoomRef = useRef({ start: 0, end: data.maxTime });
   const previousDataRef = useRef<VCDData | null>(null);
   const cursorsRef = useRef<Array<{id:number; time:number; color:string}>>([]);
   const cursorIdRef = useRef(0);
   const clearCursorsRef = useRef<() => void>(() => {});
+  const zoomInRef = useRef<() => void>(() => {});
+  const zoomOutRef = useRef<() => void>(() => {});
+  const fitToScreenRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     const container = containerRef.current;
@@ -98,25 +108,30 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
     const signalHeight = 30;
     const signalSpacing = 10;
     const groupPadding = 10;
+    const bottomPadding = signalHeight;
 
-    // Calculate total height
-    let totalHeight = margin.top + margin.bottom;
+    // Calculate inner waveform content height.
+    let innerHeight = 0;
     
     // Ungrouped signals
-    totalHeight += visibleSignals.length * (signalHeight + signalSpacing);
+    innerHeight += visibleSignals.length * (signalHeight + signalSpacing);
     
     // Groups
     groups.forEach(g => {
-      totalHeight += 20; // Group header
+      innerHeight += signalHeight; // Group header
       if (!g.collapsed) {
-        totalHeight += g.signalNames.length * (signalHeight + signalSpacing);
+        innerHeight += g.signalNames.length * (signalHeight + signalSpacing);
       } else {
-        totalHeight += (signalHeight + signalSpacing); // Bus view
+        innerHeight += (signalHeight + signalSpacing); // Bus view
       }
-      totalHeight += groupPadding;
+      innerHeight += groupPadding;
     });
+    innerHeight += bottomPadding;
+
+    const totalHeight = margin.top + innerHeight + margin.bottom;
 
     d3.select(containerRef.current).selectAll('svg').remove();
+    if (axisContainerRef.current) d3.select(axisContainerRef.current).selectAll('svg').remove();
 
     const svg = d3.select(containerRef.current)
       .append('svg')
@@ -125,6 +140,18 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
       .style('cursor', 'crosshair');
     
     svgRef.current = svg.node();
+
+    const stickyAxisSvg = d3.select(axisContainerRef.current)
+      .append('svg')
+      .attr('width', outerWidth)
+      .attr('height', margin.top)
+      .attr('class', 'time-axis')
+      .style('display', 'block')
+      .style('background', '#141414')
+      .style('pointer-events', 'none');
+
+    const stickyAxisG = stickyAxisSvg.append('g')
+      .attr('transform', `translate(${margin.left},${margin.top - 1})`);
 
     const g = svg.append('g')
       .attr('transform', `translate(${margin.left},${margin.top})`);
@@ -137,15 +164,14 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
     // Grid lines
     const grid = g.append('g')
       .attr('class', 'grid')
-      .attr('transform', `translate(0,${totalHeight - margin.top - margin.bottom})`);
+      .attr('transform', `translate(0,${innerHeight})`);
 
-    const xAxis = g.append('g')
-      .attr('class', 'x-axis')
-      .attr('transform', `translate(0,0)`);
+    const stickyXAxis = stickyAxisG.append('g')
+      .attr('class', 'x-axis');
 
     const cursorLine = g.append('line')
       .attr('y1', 0)
-      .attr('y2', totalHeight - margin.top - margin.bottom)
+      .attr('y2', innerHeight)
       .attr('stroke', '#f27d26')
       .attr('stroke-width', 1)
       .attr('stroke-dasharray', '4,4')
@@ -200,6 +226,71 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
       getSignalValueAt(signal, time, signal.values?.[0]?.value ?? 'x')
     );
 
+    const updateHorizontalScrollbar = (domain: [number, number]) => {
+      const scrollEl = horizontalScrollRef.current;
+      const spacerEl = horizontalScrollSpacerRef.current;
+      if (!scrollEl || !spacerEl) return;
+
+      const viewportWidth = Math.max(1, scrollEl.clientWidth);
+      const maxTime = Math.max(1, data.maxTime);
+      const visibleSpan = Math.max(1, Math.min(maxTime, domain[1] - domain[0]));
+      const contentWidth = visibleSpan >= maxTime
+        ? viewportWidth
+        : Math.min(1_000_000, Math.max(viewportWidth + 1, viewportWidth * (maxTime / visibleSpan)));
+
+      horizontalScrollContentWidthRef.current = contentWidth;
+      spacerEl.style.width = `${contentWidth}px`;
+
+      const maxScroll = Math.max(0, contentWidth - viewportWidth);
+      const maxStart = Math.max(0, maxTime - visibleSpan);
+      const targetScrollLeft = maxStart > 0 ? (domain[0] / maxStart) * maxScroll : 0;
+
+      isSyncingHorizontalScrollRef.current = true;
+      scrollEl.scrollLeft = targetScrollLeft;
+      requestAnimationFrame(() => {
+        isSyncingHorizontalScrollRef.current = false;
+      });
+    };
+
+    const getTooltipPosition = (event: MouseEvent) => {
+      const rect = rootRef.current?.getBoundingClientRect();
+      if (!rect) return null;
+      return {
+        x: event.clientX - rect.left + 8,
+        y: event.clientY - rect.top + 8
+      };
+    };
+
+    const setZoomDomain = (start: number, end: number) => {
+      const maxTime = Math.max(1, data.maxTime);
+      const span = Math.max(1, Math.min(maxTime, end - start));
+      const maxStart = Math.max(0, maxTime - span);
+      const nextStart = Math.max(0, Math.min(maxStart, start));
+      const nextEnd = nextStart + span;
+      const nextZoom = { start: nextStart, end: nextEnd };
+      const nextX = d3.scaleLinear()
+        .domain([nextStart, nextEnd])
+        .range([0, width]);
+
+      zoomRef.current = nextZoom;
+      setZoom(nextZoom);
+      x.domain([nextStart, nextEnd]);
+      svg.property('__zoom', d3.zoomIdentity);
+      updateHorizontalScrollbar([nextStart, nextEnd]);
+      render(nextX);
+    };
+
+    const zoomAroundCenter = (factor: number) => {
+      const { start, end } = zoomRef.current;
+      const center = (start + end) / 2;
+      const nextSpan = Math.max(1, Math.min(Math.max(1, data.maxTime), (end - start) * factor));
+      setZoomDomain(center - nextSpan / 2, center + nextSpan / 2);
+    };
+
+    zoomInRef.current = () => zoomAroundCenter(0.5);
+    zoomOutRef.current = () => zoomAroundCenter(2);
+    fitToScreenRef.current = () => setZoomDomain(0, Math.max(1, data.maxTime));
+
     const render = (currentX: d3.ScaleLinear<number, number>) => {
       currentXRef.current = currentX;
       signalPositions = [];
@@ -216,7 +307,6 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
         }
         labelsGroup.selectAll('*').remove();
 
-        const innerHeight = totalHeight - margin.top - margin.bottom;
         const cs = cursorsRef.current;
         const markerLabels = cs
           .map(c => ({
@@ -291,13 +381,11 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
             .style('cursor', 'pointer')
             .on('mousemove', (e: any) => {
               try {
-                const rect = containerRef.current?.getBoundingClientRect();
-                if (!rect) return;
-                const clientX = (e as MouseEvent).clientX;
-                const clientY = (e as MouseEvent).clientY;
+                const pos = getTooltipPosition(e as MouseEvent);
+                if (!pos) return;
                 const others = cs.filter(o => o.id !== c.id);
                 if (others.length === 0) {
-                  setTooltip({ x: clientX - rect.left + 8, y: clientY - rect.top + 8, title: 'Marker', body: 'No other markers' });
+                  setTooltip({ ...pos, title: 'Marker', body: 'No other markers' });
                   return;
                 }
                 const distances = others.map(o => ({ id: o.id, time: o.time, delta: Math.abs(o.time - c.time) }));
@@ -307,7 +395,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
                   const tUnit = convertTicksToUnit(d.time, data.timescale, displayUnit).toFixed(3);
                   return `${deltaUnit} ${displayUnit} → ${tUnit} ${displayUnit}`;
                 });
-                setTooltip({ x: clientX - rect.left + 8, y: clientY - rect.top + 8, title: 'Distances', body: lines.join('\n') });
+                setTooltip({ ...pos, title: 'Distances', body: lines.join('\n') });
               } catch { /* ignore */ }
             })
             .on('mouseout', () => setTooltip(null));
@@ -366,11 +454,11 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
             .text(`${convertTicksToUnit(delta, data.timescale, displayUnit).toFixed(3)} ${displayUnit}`);
         }
       };
-      grid.call(d3.axisBottom(currentX).ticks(10).tickSize(-totalHeight + margin.top + margin.bottom).tickFormat(() => ''))
+      grid.call(d3.axisBottom(currentX).ticks(10).tickSize(-innerHeight).tickFormat(() => ''))
         .style('stroke', '#333')
         .style('stroke-opacity', 0.2);
 
-      xAxis.call(d3.axisTop(currentX).ticks(10).tickFormat(d => {
+      stickyXAxis.call(d3.axisTop(currentX).ticks(10).tickFormat(d => {
         const val = convertTicksToUnit(Number(d), data.timescale, displayUnit);
         return `${val.toFixed(1)}${displayUnit}`;
       }));
@@ -402,13 +490,11 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
           })
           .on('mousemove', (e: any) => {
             try {
-              const rect = containerRef.current?.getBoundingClientRect();
-              if (!rect) return;
-              const clientX = (e as MouseEvent).clientX;
-              const clientY = (e as MouseEvent).clientY;
+              const pos = getTooltipPosition(e as MouseEvent);
+              if (!pos) return;
               const short = label;
               const full = signal.name;
-              setTooltip({ x: clientX - rect.left + 8, y: clientY - rect.top + 8, title: short, body: full });
+              setTooltip({ ...pos, title: short, body: full });
             } catch { /* ignore */ }
           })
           .on('mouseout', () => setTooltip(null));
@@ -722,10 +808,8 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
                     .on('click', (e: any) => { e.stopPropagation(); onSelectEvent(decoder.id, eIdx); })
                     .on('mousemove', (e: any) => {
                       try {
-                        const rect = containerRef.current?.getBoundingClientRect();
-                        if (!rect) return;
-                        const clientX = (e as MouseEvent).clientX;
-                        const clientY = (e as MouseEvent).clientY;
+                        const pos = getTooltipPosition(e as MouseEvent);
+                        if (!pos) return;
                         const labelUpper = (event.label || '').toString().toUpperCase();
                         const dataUpper = (event.data || '').toString().toUpperCase();
                         const isWrite = labelUpper.startsWith('WR') || dataUpper.includes('WRITE');
@@ -773,7 +857,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
 
                         const body = bodyLines.join('\n');
                         const accentColor = isRead ? PROTOCOL_READ_COLOR : (isWrite ? PROTOCOL_WRITE_COLOR : undefined);
-                        setTooltip({ x: clientX - rect.left + 8, y: clientY - rect.top + 8, title, body, accentColor });
+                        setTooltip({ ...pos, title, body, accentColor });
                       } catch { /* ignore */ }
                     })
                     .on('mouseout', () => setTooltip(null));
@@ -921,10 +1005,33 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
         const [start, end] = newX.domain();
         zoomRef.current = { start, end };
         setZoom(zoomRef.current);
+        updateHorizontalScrollbar([start, end]);
         render(newX);
       });
 
     svg.call(zoomBehavior);
+
+    const handleHorizontalScroll = () => {
+      if (isSyncingHorizontalScrollRef.current) return;
+
+      const scrollEl = horizontalScrollRef.current;
+      if (!scrollEl) return;
+
+      const { start, end } = zoomRef.current;
+      const maxTime = Math.max(1, data.maxTime);
+      const visibleSpan = Math.max(1, Math.min(maxTime, end - start));
+      const maxStart = Math.max(0, maxTime - visibleSpan);
+      if (maxStart <= 0) return;
+
+      const contentWidth = horizontalScrollContentWidthRef.current || scrollEl.scrollWidth;
+      const maxScroll = Math.max(1, contentWidth - scrollEl.clientWidth);
+      const nextStart = Math.max(0, Math.min(maxStart, (scrollEl.scrollLeft / maxScroll) * maxStart));
+      setZoomDomain(nextStart, nextStart + visibleSpan);
+    };
+
+    const horizontalScrollEl = horizontalScrollRef.current;
+    horizontalScrollEl?.addEventListener('scroll', handleHorizontalScroll, { passive: true });
+
     // If a protocol event is selected, add a marker for it (avoid duplicates).
     if (selectedEvent && protocolDecoders) {
       const key = `${selectedEvent.protocolId}-${selectedEvent.index}`;
@@ -944,6 +1051,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
     }
 
     render(x);
+    updateHorizontalScrollbar([activeZoom.start, activeZoom.end]);
 
     // If a movedSignalName is provided, animate a highlight on that row
     try {
@@ -976,10 +1084,20 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
 
     // Fit to screen shortcut (F key) + move selected with Alt+ArrowUp/Down
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key.toLowerCase() === 'f') {
-        svg.transition()
-          .duration(500)
-          .call(zoomBehavior.transform, d3.zoomIdentity);
+      const target = e.target as HTMLElement | null;
+      const isTypingTarget = target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.tagName === 'SELECT' || target?.isContentEditable;
+
+      if (!isTypingTarget && (e.key === '+' || e.key === '=')) {
+        e.preventDefault();
+        zoomInRef.current();
+      }
+      if (!isTypingTarget && (e.key === '-' || e.key === '_')) {
+        e.preventDefault();
+        zoomOutRef.current();
+      }
+      if (!isTypingTarget && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        fitToScreenRef.current();
       }
       if (e.key === 'Delete') {
         if (selectedSignalName && onDeleteSignal) {
@@ -1060,7 +1178,10 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
                 dec = val === '1' ? 1 : (val === '0' ? 0 : 'X');
               }
               const short = (sig.name.split('.').pop() || sig.name);
-              setTooltip({ x: mx + 8, y: my + 8, title: short, body: `Time: ${timeUnit} ${displayUnit}\nHex: ${hex}\nDec: ${dec}` });
+              const pos = getTooltipPosition(e as MouseEvent);
+              if (pos) {
+                setTooltip({ ...pos, title: short, body: `Time: ${timeUnit} ${displayUnit}\nHex: ${hex}\nDec: ${dec}` });
+              }
             } catch { /* ignore */ }
           }
         }
@@ -1079,13 +1200,14 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
 
     return () => {
       svg.on('.zoom', null);
+      horizontalScrollEl?.removeEventListener('scroll', handleHorizontalScroll);
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [data, visibleSignals, displayUnit, protocolDecoders, selectedEvent, selectedSignalName, groups, onToggleGroup, onSelectEvent, onSelectSignal, movedSignalName, onReorderSignal, containerWidth]);
 
   return (
-    <div className="relative w-full bg-[#141414] rounded-lg border border-[#333] p-4 flex flex-col gap-4">
-      <div className="flex justify-between items-center">
+    <div ref={rootRef} className="relative h-full min-h-0 w-full overflow-hidden bg-[#141414] rounded-lg border border-[#333] p-4 flex flex-col gap-4">
+      <div className="flex-shrink-0 flex justify-between items-center">
         <div className="flex gap-4 text-[10px] text-gray-500 font-mono uppercase tracking-widest">
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 bg-[#00ff00]"></div>
@@ -1095,10 +1217,33 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
             <div className="w-3 h-3 bg-[#f27d26]"></div>
             <span>Protocol</span>
           </div>
-          <span className="ml-4">Scroll to Zoom • Drag to Pan • Click to Select • Press 'F' to Fit</span>
+          <span className="ml-4">Scroll to Zoom • Drag to Pan • Click to Select</span>
         </div>
         
         <div className="flex items-center gap-4 text-[10px] font-mono">
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => zoomInRef.current()}
+              className="p-1 bg-[#0b1220] border border-[#333] rounded text-gray-300 hover:bg-[#111827] hover:text-[#f27d26] transition-colors"
+              title="Zoom in (+)"
+            >
+              <ZoomIn size={14} />
+            </button>
+            <button
+              onClick={() => zoomOutRef.current()}
+              className="p-1 bg-[#0b1220] border border-[#333] rounded text-gray-300 hover:bg-[#111827] hover:text-[#f27d26] transition-colors"
+              title="Zoom out (-)"
+            >
+              <ZoomOut size={14} />
+            </button>
+            <button
+              onClick={() => fitToScreenRef.current()}
+              className="p-1 bg-[#0b1220] border border-[#333] rounded text-gray-300 hover:bg-[#111827] hover:text-[#f27d26] transition-colors"
+              title="Fit to screen (F)"
+            >
+              <Maximize2 size={14} />
+            </button>
+          </div>
           <div className="flex items-center gap-2 text-gray-500">
             <span className="uppercase tracking-widest opacity-50">Cursor:</span>
             <span className="text-[#f27d26] font-bold min-w-[80px]">
@@ -1130,8 +1275,18 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
         </div>
       </div>
 
-      <div className="w-full overflow-y-auto max-h-[600px] custom-scrollbar border-t border-[#333] pt-4">
+      <div ref={axisContainerRef} className="flex-shrink-0 w-full border-t border-[#333]" />
+
+      <div className="w-full flex-1 min-h-0 overflow-auto custom-scrollbar">
         <div ref={containerRef} className="w-full" />
+      </div>
+
+      <div
+        ref={horizontalScrollRef}
+        className="flex-shrink-0 h-4 overflow-x-auto overflow-y-hidden custom-scrollbar"
+        title="Scroll horizontally through the zoomed waveform"
+      >
+        <div ref={horizontalScrollSpacerRef} className="h-px w-full" />
       </div>
 
       {tooltip && (
@@ -1143,16 +1298,6 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
         </div>
       )}
 
-      <div className="flex justify-between items-center px-2 py-1 bg-[#0a0a0a] rounded border border-[#333] text-[9px] font-mono text-gray-500">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <span className="opacity-50 uppercase">Visible Range:</span>
-            <span className="text-gray-300">
-              {convertTicksToUnit(zoom.start, data.timescale, displayUnit).toFixed(1)} - {convertTicksToUnit(zoom.end, data.timescale, displayUnit).toFixed(1)} {displayUnit}
-            </span>
-          </div>
-        </div>
-      </div>
     </div>
   );
 };

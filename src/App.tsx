@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useMemo } from 'react';
-import { Upload, Cpu, Activity, Settings, Plus, Trash2, ChevronRight, ChevronLeft, FileText } from 'lucide-react';
+import { Upload, Cpu, Activity, Settings, Plus, Trash2, ChevronRight, ChevronLeft, ChevronDown, FileText } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { parseVCD, VCDData, decodeUART, decodeSPI, decodeAvalon, DecodedEvent, calculateSignalFrequency, calculateSignalMeasurements, detectBestDisplayUnit } from './utils/vcd';
 import { WaveformViewer } from './components/WaveformViewer';
@@ -43,6 +43,9 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isSidebarResizing, setIsSidebarResizing] = useState(false);
+  const [visibleSignalsCollapsed, setVisibleSignalsCollapsed] = useState(false);
+  const [protocolsCollapsed, setProtocolsCollapsed] = useState(false);
+  const [signalGroupsCollapsed, setSignalGroupsCollapsed] = useState(false);
   const [signalSearchTerm, setSignalSearchTerm] = useState<string>('');
 
   const handleResizeStart = React.useCallback((e: React.MouseEvent) => {
@@ -561,33 +564,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-[#e4e3e0] font-sans selection:bg-[#f27d26] selection:text-black">
-      {/* Header */}
-      <header className="border-bottom border-[#141414] p-6 flex justify-between items-center">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-[#f27d26] rounded flex items-center justify-center text-black">
-            <Activity size={24} />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight uppercase italic font-serif">VCD Protocol Analyzer</h1>
-            <p className="text-xs text-gray-500 font-mono uppercase tracking-widest">Mission Control / Signal Analysis</p>
-          </div>
-        </div>
-        
-        <div className="flex gap-4">
-          <label className="cursor-pointer flex items-center gap-2 px-4 py-2 bg-[#141414] hover:bg-[#222] border border-[#333] rounded-md transition-colors text-sm font-mono">
-            <Upload size={16} />
-            LOAD VCD
-            <input 
-              type="file" 
-              className="hidden" 
-              accept=".vcd" 
-              onChange={(e) => e.target.files?.[0] && handleFileUpload(e.target.files[0])} 
-            />
-          </label>
-        </div>
-      </header>
-
-      <main className="flex h-[calc(100vh-120px)]">
+      <main className="flex h-[calc(100vh-28px)]">
         {/* Resizable Left Sidebar */}
         <div
           className={cn(
@@ -609,12 +586,19 @@ export default function App() {
           
           {/* Sidebar Content with Scrollbar */}
           {!sidebarCollapsed && (
-          <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          <div className="sidebar-scroll-left flex-1 overflow-y-auto p-6 space-y-6">
           {/* Visible Signals (moved to top) */}
           {vcdData && (
-            <section className="bg-[#141414] border border-[#333] rounded-lg p-4 max-h-[400px] overflow-y-auto">
+            <section className={cn("bg-[#141414] border border-[#333] rounded-lg p-4", !visibleSignalsCollapsed && "max-h-[400px] overflow-y-auto")}>
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-2 text-[#f27d26]">
+                  <button
+                    onClick={() => setVisibleSignalsCollapsed(prev => !prev)}
+                    className="p-0.5 hover:bg-[#222] rounded transition-colors"
+                    title={visibleSignalsCollapsed ? "Expand Visible Signals" : "Collapse Visible Signals"}
+                  >
+                    {visibleSignalsCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                  </button>
                   <Settings size={16} />
                   <h2 className="text-xs font-bold uppercase tracking-widest font-mono">Visible Signals</h2>
                 </div>
@@ -633,36 +617,40 @@ export default function App() {
                   </button>
                 </div>
               </div>
-              <input
-                type="text"
-                placeholder="Search signals..."
-                value={signalSearchTerm}
-                onChange={(e) => setSignalSearchTerm(e.target.value)}
-                className="w-full bg-[#0a0a0a] border border-[#333] rounded px-2 py-1.5 text-xs font-mono text-gray-400 placeholder-gray-600 mb-3 focus:outline-none focus:border-[#f27d26] transition-colors"
-              />
-              <div className="space-y-1">
-                {filteredSignalNames.map((name: string) => (
-                  <label key={name} className="flex items-center gap-2 p-1 hover:bg-[#222] rounded cursor-pointer group">
-                    <input 
-                      type="checkbox"
-                      checked={visibleSignals.includes(name)}
-                      onChange={(e) => {
-                        if (e.target.checked) setVisibleSignals([...visibleSignals, name]);
-                        else setVisibleSignals(visibleSignals.filter(s => s !== name));
-                      }}
-                      className="accent-[#f27d26]"
-                    />
-                    <div className="flex flex-col">
-                      <span className="text-xs font-mono text-gray-400 group-hover:text-white transition-colors">{name}</span>
-                      {vcdData.signals.get(name) && (name.toLowerCase().includes('clk') || name.toLowerCase().includes('clock')) && (
-                        <span className="text-[9px] text-emerald-500 font-mono opacity-60">
-                          {calculateSignalFrequency(vcdData.signals.get(name)!, vcdData.timescale)}
-                        </span>
-                      )}
-                    </div>
-                  </label>
-                ))}
-              </div>
+              {!visibleSignalsCollapsed && (
+                <>
+                  <input
+                    type="text"
+                    placeholder="Search signals..."
+                    value={signalSearchTerm}
+                    onChange={(e) => setSignalSearchTerm(e.target.value)}
+                    className="w-full bg-[#0a0a0a] border border-[#333] rounded px-2 py-1.5 text-xs font-mono text-gray-400 placeholder-gray-600 mb-3 focus:outline-none focus:border-[#f27d26] transition-colors"
+                  />
+                  <div className="space-y-1">
+                    {filteredSignalNames.map((name: string) => (
+                      <label key={name} className="flex items-center gap-2 p-1 hover:bg-[#222] rounded cursor-pointer group">
+                        <input 
+                          type="checkbox"
+                          checked={visibleSignals.includes(name)}
+                          onChange={(e) => {
+                            if (e.target.checked) setVisibleSignals([...visibleSignals, name]);
+                            else setVisibleSignals(visibleSignals.filter(s => s !== name));
+                          }}
+                          className="accent-[#f27d26]"
+                        />
+                        <div className="flex flex-col">
+                          <span className="text-xs font-mono text-gray-400 group-hover:text-white transition-colors">{name}</span>
+                          {vcdData.signals.get(name) && (name.toLowerCase().includes('clk') || name.toLowerCase().includes('clock')) && (
+                            <span className="text-[9px] text-emerald-500 font-mono opacity-60">
+                              {calculateSignalFrequency(vcdData.signals.get(name)!, vcdData.timescale)}
+                            </span>
+                          )}
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </>
+              )}
             </section>
           )}
 
@@ -670,6 +658,13 @@ export default function App() {
           <section className="bg-[#141414] border border-[#333] rounded-lg p-4">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2 text-[#f27d26]">
+                <button
+                  onClick={() => setProtocolsCollapsed(prev => !prev)}
+                  className="p-0.5 hover:bg-[#222] rounded transition-colors"
+                  title={protocolsCollapsed ? "Expand Protocols" : "Collapse Protocols"}
+                >
+                  {protocolsCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                </button>
                 <Cpu size={16} />
                 <h2 className="text-xs font-bold uppercase tracking-widest font-mono">Protocols</h2>
               </div>
@@ -690,31 +685,32 @@ export default function App() {
               </div>
             </div>
 
-            <div className="space-y-4">
-              {protocols.length === 0 && (
-                <p className="text-xs text-gray-600 italic font-mono text-center py-4">No protocols defined</p>
-              )}
-              {protocols.map((protocol) => (
-                <div key={protocol.id} className="p-3 bg-[#0a0a0a] border border-[#333] rounded space-y-3">
-                  <div className="flex justify-between items-center">
-                    <select 
-                      value={protocol.type}
-                      onChange={(e) => updateProtocol(protocol.id, { type: e.target.value as any })}
-                      className="bg-transparent text-xs font-bold font-mono outline-none"
-                    >
-                      <option value="UART">UART</option>
-                      <option value="SPI">SPI</option>
-                      <option value="Avalon">Avalon-MM</option>
-                    </select>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] bg-emerald-500/10 text-emerald-500 px-1.5 py-0.5 rounded border border-emerald-500/20">
-                        {decodedProtocols.find(dp => dp.id === protocol.id)?.decoded.length || 0} events
-                      </span>
-                      <button onClick={() => removeProtocol(protocol.id)} className="text-gray-600 hover:text-red-500">
-                        <Trash2 size={14} />
-                      </button>
+            {!protocolsCollapsed && (
+              <div className="space-y-4">
+                {protocols.length === 0 && (
+                  <p className="text-xs text-gray-600 italic font-mono text-center py-4">No protocols defined</p>
+                )}
+                {protocols.map((protocol) => (
+                  <div key={protocol.id} className="p-3 bg-[#0a0a0a] border border-[#333] rounded space-y-3">
+                    <div className="flex justify-between items-center">
+                      <select 
+                        value={protocol.type}
+                        onChange={(e) => updateProtocol(protocol.id, { type: e.target.value as any })}
+                        className="bg-transparent text-xs font-bold font-mono outline-none"
+                      >
+                        <option value="UART">UART</option>
+                        <option value="SPI">SPI</option>
+                        <option value="Avalon">Avalon-MM</option>
+                      </select>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] bg-emerald-500/10 text-emerald-500 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                          {decodedProtocols.find(dp => dp.id === protocol.id)?.decoded.length || 0} events
+                        </span>
+                        <button onClick={() => removeProtocol(protocol.id)} className="text-gray-600 hover:text-red-500">
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
                     </div>
-                  </div>
 
                   <div className="space-y-2">
                     <label className="block text-[10px] text-gray-500 uppercase font-mono">Signal Source</label>
@@ -813,15 +809,23 @@ export default function App() {
                       ))}
                     </div>
                   )}
-                </div>
-              ))}
-            </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </section>
 
           {/* Signal Groups */}
           <section className="bg-[#141414] border border-[#333] rounded-lg p-4">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2 text-emerald-500">
+                <button
+                  onClick={() => setSignalGroupsCollapsed(prev => !prev)}
+                  className="p-0.5 hover:bg-[#222] rounded transition-colors"
+                  title={signalGroupsCollapsed ? "Expand Signal Groups" : "Collapse Signal Groups"}
+                >
+                  {signalGroupsCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                </button>
                 <Settings size={16} />
                 <h2 className="text-xs font-bold uppercase tracking-widest font-mono">Signal Groups</h2>
               </div>
@@ -849,7 +853,8 @@ export default function App() {
               </div>
             </div>
 
-            <div className="space-y-4">
+            {!signalGroupsCollapsed && (
+              <div className="space-y-4">
               {groups.length === 0 && (
                 <p className="text-xs text-gray-600 italic font-mono text-center py-4">No groups defined</p>
               )}
@@ -890,7 +895,8 @@ export default function App() {
                   </div>
                 </div>
               ))}
-            </div>
+              </div>
+            )}
           </section>
 
           {/* Signal Visibility */}
@@ -911,14 +917,14 @@ export default function App() {
         </div>
 
         {/* Main Viewer Area */}
-        <div className={cn("flex-1 min-w-0 overflow-y-auto flex flex-col", sidebarCollapsed ? "p-3" : "p-6")}>
+        <div className={cn("flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col", sidebarCollapsed ? "p-3" : "p-6")}>
           {!vcdData ? (
             <div 
               onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
               onDragLeave={() => setIsDragging(false)}
               onDrop={onDrop}
               className={cn(
-                "h-[600px] border-2 border-dashed rounded-xl flex flex-col items-center justify-center transition-all duration-300",
+                "h-full border-2 border-dashed rounded-xl flex flex-col items-center justify-center transition-all duration-300",
                 isDragging ? "border-[#f27d26] bg-[#f27d26]/5" : "border-[#333] bg-[#141414]"
               )}
             >
@@ -930,10 +936,19 @@ export default function App() {
                 <Upload size={64} />
               </motion.div>
               <h3 className="text-xl font-serif italic mb-2">Drop VCD file here</h3>
-              <p className="text-gray-500 font-mono text-sm">or click LOAD VCD in the header</p>
+              <label className="mt-3 cursor-pointer flex items-center gap-2 px-4 py-2 bg-[#141414] hover:bg-[#222] border border-[#333] rounded-md transition-colors text-sm font-mono text-gray-300">
+                <Upload size={16} />
+                LOAD VCD
+                <input
+                  type="file"
+                  className="hidden"
+                  accept=".vcd"
+                  onChange={(e) => e.target.files?.[0] && handleFileUpload(e.target.files[0])}
+                />
+              </label>
             </div>
           ) : (
-            <div className={cn("flex-1 min-w-0 flex flex-col", sidebarCollapsed ? "space-y-2" : "space-y-6")}>
+            <div className={cn("flex-1 min-w-0 min-h-0 flex flex-col", sidebarCollapsed ? "space-y-2" : "space-y-6")}>
               {/* Measurement Bar - doesn't grow */}
               <div className="flex-shrink-0">
                 <AnimatePresence>
@@ -942,18 +957,18 @@ export default function App() {
                       initial={{ height: 0, opacity: 0 }}
                       animate={{ height: 'auto', opacity: 1 }}
                       exit={{ height: 0, opacity: 0 }}
-                      className="bg-[#1a1a1a] border border-[#f27d26]/30 rounded-lg p-4 overflow-hidden"
+                      className="bg-[#1a1a1a] border border-[#f27d26]/30 rounded p-2 overflow-hidden"
                     >
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-3">
-                          <Activity size={16} className="text-[#f27d26]" />
-                          <h3 className="text-xs font-bold uppercase tracking-widest font-mono text-white">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <Activity size={13} className="flex-shrink-0 text-[#f27d26]" />
+                          <h3 className="truncate text-[10px] font-bold uppercase font-mono text-white">
                             Measurements: <span className="text-[#f27d26]">{selectedSignalName}</span>
                           </h3>
                         </div>
                         <button 
                           onClick={() => setSelectedSignalName(null)}
-                          className="text-gray-500 hover:text-white transition-colors"
+                          className="ml-2 text-xs text-gray-500 hover:text-white transition-colors"
                         >
                           ×
                         </button>
@@ -965,7 +980,7 @@ export default function App() {
                         
                         if (measurements) {
                           return (
-                            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                            <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
                               {[
                                 { label: 'Frequency', value: measurements.frequency },
                                 { label: 'Period', value: measurements.avgPeriod },
@@ -973,9 +988,9 @@ export default function App() {
                                 { label: 'Neg Pulse', value: measurements.avgNegPulse },
                                 { label: 'Duty Cycle', value: measurements.dutyCycle },
                               ].map(stat => (
-                                <div key={stat.label} className="bg-[#0a0a0a] p-2 rounded border border-[#333]">
-                                  <div className="text-[9px] text-gray-500 uppercase font-mono mb-1">{stat.label}</div>
-                                  <div className="text-sm font-mono text-emerald-500 font-bold">{stat.value}</div>
+                                <div key={stat.label} className="bg-[#0a0a0a] px-2 py-1 rounded border border-[#333]">
+                                  <div className="text-[8px] leading-tight text-gray-500 uppercase font-mono">{stat.label}</div>
+                                  <div className="text-xs leading-tight font-mono text-emerald-500 font-bold">{stat.value}</div>
                                 </div>
                               ))}
                             </div>
@@ -1002,7 +1017,7 @@ export default function App() {
               </div>
 
               {/* Waveform Viewer - grows to fill available space */}
-              <div className="flex-1 min-w-0 overflow-hidden">
+              <div className="flex-1 min-w-0 min-h-0 overflow-hidden">
                 <WaveformViewer 
                   data={vcdData} 
                   visibleSignals={visibleSignals}
@@ -1034,7 +1049,7 @@ export default function App() {
           {vcdData && <span>Memory: {(JSON.stringify(vcdData).length / 1024 / 1024).toFixed(2)} MB</span>}
         </div>
         <div>
-          v1.0.5
+          v1.0.6
         </div>
       </footer>
     </div>

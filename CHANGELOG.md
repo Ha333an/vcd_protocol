@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.6] - 2026-05-20
+
+### Added
+- Independent collapse controls for the Visible Signals, Protocols, and Signal Groups sidebar panels.
+- Horizontal waveform scrollbar for panning across a zoomed-in waveform.
+- Toolbar zoom controls for zoom in, zoom out, and fit-to-screen actions.
+- Keyboard shortcuts for zooming: `+`/`=` to zoom in, `-` to zoom out, and `F` to fit.
+- Persistent timing axis above the waveform rows while vertically scrolling.
+
+### Changed
+- Removed the top application header to give the waveform more usable space.
+- Moved the file load button into the empty drop zone.
+- Reduced extra nested scrolling so the waveform area uses a single primary vertical scrollbar.
+- Moved the sidebar scrollbar to the left side to avoid conflict with the resize handle.
+- Increased scrollbar width for easier grabbing.
+- Made the Measurements panel more compact.
+
+### Removed
+- Removed WLF file registration and automatic `wlf2vcd` conversion from the extension.
+
+### Fixed
+- Corrected hover tooltip positioning after vertical waveform scrolling.
+- Added bottom padding so the last waveform row is fully visible.
+
 ## [1.0.5] - 2026-05-20
 
 ### Added
