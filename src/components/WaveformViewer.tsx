@@ -1,6 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
-import { VCDData, VCDSignal, DecodedEvent, binToHex, calculateSignalFrequency, convertTicksToUnit } from '../utils/vcd';
+import { VCDData, VCDSignal, DecodedEvent, binToHex, calculateSignalFrequency, convertTicksToUnit, getSignalValueAt } from '../utils/vcd';
+
+const PROTOCOL_READ_COLOR = '#10b981';
+const PROTOCOL_WRITE_COLOR = '#f27d26';
 
 interface WaveformProps {
   data: VCDData;
@@ -49,20 +52,49 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
   movedSignalName,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [tooltip, setTooltip] = useState<null | { x: number; y: number; title: string; body: string }>(null);
+  const [tooltip, setTooltip] = useState<null | { x: number; y: number; title: string; body: string; accentColor?: string }>(null);
   const [zoom, setZoom] = useState({ start: 0, end: data.maxTime });
   const [hoverTime, setHoverTime] = useState<number | null>(null);
+  const [containerWidth, setContainerWidth] = useState(0);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const currentXRef = useRef<d3.ScaleLinear<number, number> | null>(null);
+  const zoomRef = useRef({ start: 0, end: data.maxTime });
+  const previousDataRef = useRef<VCDData | null>(null);
   const cursorsRef = useRef<Array<{id:number; time:number; color:string}>>([]);
   const cursorIdRef = useRef(0);
   const clearCursorsRef = useRef<() => void>(() => {});
 
   useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const updateWidth = (width: number) => {
+      setContainerWidth(prev => Math.abs(prev - width) < 1 ? prev : width);
+    };
+
+    updateWidth(container.clientWidth);
+
+    const resizeObserver = new ResizeObserver(entries => {
+      const nextWidth = entries[0]?.contentRect.width ?? container.clientWidth;
+      updateWidth(nextWidth);
+    });
+
+    resizeObserver.observe(container);
+    return () => resizeObserver.disconnect();
+  }, []);
+
+  useEffect(() => {
     if (!containerRef.current || !data) return;
 
+    if (previousDataRef.current !== data) {
+      zoomRef.current = { start: 0, end: data.maxTime };
+      previousDataRef.current = data;
+      setZoom(zoomRef.current);
+    }
+
     const margin = { top: 40, right: 40, bottom: 40, left: 150 };
-    const width = containerRef.current.clientWidth - margin.left - margin.right;
+    const outerWidth = containerWidth || containerRef.current.clientWidth;
+    const width = Math.max(1, outerWidth - margin.left - margin.right);
     const signalHeight = 30;
     const signalSpacing = 10;
     const groupPadding = 10;
@@ -88,7 +120,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
 
     const svg = d3.select(containerRef.current)
       .append('svg')
-      .attr('width', width + margin.left + margin.right)
+      .attr('width', outerWidth)
       .attr('height', totalHeight)
       .style('cursor', 'crosshair');
     
@@ -97,8 +129,9 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
     const g = svg.append('g')
       .attr('transform', `translate(${margin.left},${margin.top})`);
 
+    const activeZoom = zoomRef.current;
     const x = d3.scaleLinear()
-      .domain([zoom.start, zoom.end])
+      .domain([activeZoom.start, activeZoom.end])
       .range([0, width]);
 
     // Grid lines
@@ -123,6 +156,50 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
     let signalPositions: Array<any> = [];
     let markerGroup: d3.Selection<SVGGElement, unknown, null, undefined> | null = null;
 
+    const lowerBoundByTime = (values: { time: number; value: string }[], time: number) => {
+      let low = 0;
+      let high = values.length;
+      while (low < high) {
+        const mid = (low + high) >> 1;
+        if (values[mid].time < time) low = mid + 1;
+        else high = mid;
+      }
+      return low;
+    };
+
+    const getVisibleTimes = (signal: VCDSignal, xMin: number, xMax: number) => {
+      const visibleTimes: number[] = [xMin];
+      const values = signal.values || [];
+      let lastTime = xMin;
+
+      for (let i = lowerBoundByTime(values, xMin); i < values.length; i++) {
+        const time = values[i].time;
+        if (time >= xMax) break;
+        if (time > xMin && time !== lastTime) {
+          visibleTimes.push(time);
+          lastTime = time;
+        }
+      }
+
+      if (xMax !== lastTime) visibleTimes.push(xMax);
+      return visibleTimes;
+    };
+
+    const hasExplicitUnknownAtTime = (signal: VCDSignal, time: number) => {
+      const values = signal.values || [];
+      let index = lowerBoundByTime(values, time);
+      while (index < values.length && values[index].time === time) {
+        const value = values[index].value.toLowerCase();
+        if (value === 'x' || value === 'z') return true;
+        index++;
+      }
+      return false;
+    };
+
+    const getDisplaySignalValueAt = (signal: VCDSignal, time: number): string => (
+      getSignalValueAt(signal, time, signal.values?.[0]?.value ?? 'x')
+    );
+
     const render = (currentX: d3.ScaleLinear<number, number>) => {
       currentXRef.current = currentX;
       signalPositions = [];
@@ -141,11 +218,38 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
 
         const innerHeight = totalHeight - margin.top - margin.bottom;
         const cs = cursorsRef.current;
+        const markerLabels = cs
+          .map(c => ({
+            cursor: c,
+            xPos: currentXRef.current ? currentXRef.current(c.time) : 0,
+            text: `${convertTicksToUnit(c.time, data.timescale, displayUnit).toFixed(3)} ${displayUnit}`
+          }))
+          .sort((a, b) => a.xPos - b.xPos);
+        const labelLaneRight = [-Infinity, -Infinity];
+        const labelPlacements = new Map<number, { lane: number; text: string; width: number } | null>();
+
+        for (const label of markerLabels) {
+          const labelWidth = Math.max(76, label.text.length * 7 + 12);
+          const labelLeft = label.xPos + 4;
+          const lane = labelLaneRight.findIndex(right => labelLeft > right + 4);
+
+          if (lane === -1) {
+            labelPlacements.set(label.cursor.id, null);
+            continue;
+          }
+
+          labelLaneRight[lane] = labelLeft + labelWidth;
+          labelPlacements.set(label.cursor.id, { lane, text: label.text, width: labelWidth });
+        }
 
         for (let idx = 0; idx < cs.length; idx++) {
           const c = cs[idx];
           if (!currentXRef.current) continue;
           const xPos = currentXRef.current(c.time);
+          const label = labelPlacements.get(c.id);
+          const labelY = label ? -8 + label.lane * 20 : -6;
+          const labelHeight = label ? 18 : 10;
+          const labelWidth = label?.width ?? 8;
           // dashed vertical line in waveform area
           markerGroup.append('line')
             .attr('x1', xPos)
@@ -160,26 +264,29 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
           // label on top timeline for readability
           labelsGroup.append('rect')
             .attr('x', xPos + 4)
-            .attr('y', -8)
-            .attr('height', 18)
+            .attr('y', labelY)
+            .attr('width', labelWidth)
+            .attr('height', labelHeight)
             .attr('rx', 3)
             .attr('fill', '#000')
-            .attr('fill-opacity', 0.45);
+            .attr('fill-opacity', label ? 0.45 : 0.75);
 
-          labelsGroup.append('text')
-            .attr('x', xPos + 8)
-            .attr('y', 6)
-            .attr('fill', c.color)
-            .style('font-size', '11px')
-            .style('font-family', 'var(--font-mono)')
-            .text(`${convertTicksToUnit(c.time, data.timescale, displayUnit).toFixed(3)} ${displayUnit}`);
+          if (label) {
+            labelsGroup.append('text')
+              .attr('x', xPos + 8)
+              .attr('y', 6 + label.lane * 20)
+              .attr('fill', c.color)
+              .style('font-size', '11px')
+              .style('font-family', 'var(--font-mono)')
+              .text(label.text);
+          }
 
           // interactive hit area for marker tooltip (shows distances to other markers)
           labelsGroup.append('rect')
             .attr('x', xPos + 4)
-            .attr('y', -8)
-            .attr('width', 120)
-            .attr('height', 18)
+            .attr('y', labelY)
+            .attr('width', labelWidth)
+            .attr('height', labelHeight)
             .attr('fill', 'transparent')
             .style('cursor', 'pointer')
             .on('mousemove', (e: any) => {
@@ -353,10 +460,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
 
         if (signal.size > 1) {
           // Render as bus
-          const transitionTimes = new Set<number>();
-          signal.values.forEach(v => transitionTimes.add(v.time));
-          const sortedTimes = Array.from(transitionTimes).sort((a, b) => a - b);
-          const visibleTimes = [xMin, ...sortedTimes.filter(t => t > xMin && t < xMax), xMax];
+          const visibleTimes = getVisibleTimes(signal, xMin, xMax);
 
           for (let i = 0; i < visibleTimes.length - 1; i++) {
             const tStart = visibleTimes[i];
@@ -367,7 +471,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
 
             if (rectWidth < 0.5) continue;
 
-            const val = getSignalValueAt(signal, tStart);
+            const val = getDisplaySignalValueAt(signal, tStart);
             const hex = binToHex(val);
 
             const busG = waveG.append('g');
@@ -397,10 +501,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
         }
 
         // Render X/Z states as colored rectangles, and draw waveform path only for 0/1 values
-        const transitionTimes = new Set<number>();
-        signal.values.forEach(v => transitionTimes.add(v.time));
-        const sortedTimes = Array.from(transitionTimes).sort((a, b) => a - b);
-        const visibleTimes = [xMin, ...sortedTimes.filter(t => t > xMin && t < xMax), xMax];
+        const visibleTimes = getVisibleTimes(signal, xMin, xMax);
 
         // Draw X/Z background segments first
         for (let i = 0; i < visibleTimes.length - 1; i++) {
@@ -411,13 +512,13 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
           const rectWidth = xEnd - xStart;
           if (rectWidth < 0.5) continue;
 
-          const valRaw = getSignalValueAt(signal, tStart);
+          const valRaw = getDisplaySignalValueAt(signal, tStart);
           const val = (valRaw || '').toLowerCase();
 
           // Only render X/Z if it's actually present in the signal's recorded values
           // at this exact time, or if the first recorded value itself is X/Z
           // (treat initial explicit unknowns as valid to show)
-          const hasExplicitAtTime = signal.values.some(v => v.time === tStart && (v.value.toLowerCase() === 'x' || v.value.toLowerCase() === 'z'));
+          const hasExplicitAtTime = hasExplicitUnknownAtTime(signal, tStart);
           const firstIsUnknown = signal.values.length > 0 && (signal.values[0].value.toLowerCase() === 'x' || signal.values[0].value.toLowerCase() === 'z') && tStart <= signal.values[0].time;
 
           if ((val === 'x' || val === 'z') && (hasExplicitAtTime || firstIsUnknown)) {
@@ -458,7 +559,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
           const xStart = currentX(tStart);
           const xEnd = currentX(tEnd);
 
-          const val = getSignalValueAt(signal, tStart);
+          const val = getDisplaySignalValueAt(signal, tStart);
           if (val === '0' || val === '1') {
             const valY = (val === '1' ? 0 : signalHeight) + y;
             if (!haveStarted) {
@@ -502,11 +603,17 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
           .style('font-weight', 'bold')
           .text(group.name);
 
-        // Find all transition times for all signals in the group
+        // Find visible transition times for all signals in the group
         const transitionTimes = new Set<number>();
         group.signalNames.forEach(name => {
           const sig = data.signals.get(name);
-          if (sig) sig.values.forEach(v => transitionTimes.add(v.time));
+          if (!sig) return;
+          const values = sig.values || [];
+          for (let i = lowerBoundByTime(values, xMin); i < values.length; i++) {
+            const time = values[i].time;
+            if (time >= xMax) break;
+            if (time > xMin) transitionTimes.add(time);
+          }
         });
         
         const sortedTimes = Array.from(transitionTimes).sort((a, b) => a - b);
@@ -529,7 +636,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
           group.signalNames.forEach((name) => {
             const sig = data.signals.get(name);
             if (sig) {
-              binStr += getSignalValueAt(sig, tStart);
+              binStr += getDisplaySignalValueAt(sig, tStart);
             } else {
               binStr += 'x';
             }
@@ -665,7 +772,8 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
                         }
 
                         const body = bodyLines.join('\n');
-                        setTooltip({ x: clientX - rect.left + 8, y: clientY - rect.top + 8, title, body });
+                        const accentColor = isRead ? PROTOCOL_READ_COLOR : (isWrite ? PROTOCOL_WRITE_COLOR : undefined);
+                        setTooltip({ x: clientX - rect.left + 8, y: clientY - rect.top + 8, title, body, accentColor });
                       } catch { /* ignore */ }
                     })
                     .on('mouseout', () => setTooltip(null));
@@ -677,7 +785,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
                 const dataUpper = (event.data || '').toString().toUpperCase();
                 const isWrite = labelUpper.startsWith('WR') || dataUpper.includes('WRITE');
                 const isRead = labelUpper.startsWith('RD') || dataUpper.includes('READ');
-                const eventColor = isRead ? '#10b981' : (isWrite ? '#f27d26' : '#f27d26');
+                const eventColor = isRead ? PROTOCOL_READ_COLOR : (isWrite ? PROTOCOL_WRITE_COLOR : PROTOCOL_WRITE_COLOR);
 
                 eventG.append('rect')
                   .attr('x', xStart)
@@ -805,22 +913,14 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
       }
     });
 
-    const getSignalValueAt = (signal: VCDSignal, time: number): string => {
-      if (!signal.values || signal.values.length === 0) return 'x';
-      // Use the first known value as the initial value (avoid returning 'x' before first transition)
-      let lastVal = signal.values[0].value;
-      for (const v of signal.values) {
-        if (v.time > time) return lastVal;
-        lastVal = v.value;
-      }
-      return lastVal;
-    };
-
     const zoomBehavior = d3.zoom<SVGSVGElement, unknown>()
       .scaleExtent([1, 10000])
       .translateExtent([[0, 0], [width, totalHeight]])
       .on('zoom', (event) => {
         const newX = event.transform.rescaleX(x);
+        const [start, end] = newX.domain();
+        zoomRef.current = { start, end };
+        setZoom(zoomRef.current);
         render(newX);
       });
 
@@ -926,7 +1026,8 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
       if (!currentXRef.current) return;
       const [mx, my] = d3.pointer(e);
       const time = currentXRef.current.invert(mx - margin.left);
-      if (time >= zoom.start && time <= zoom.end) {
+      const [xStart, xEnd] = currentXRef.current.domain();
+      if (time >= xStart && time <= xEnd) {
         setHoverTime(time);
         cursorLine.attr('x1', currentXRef.current(time)).attr('x2', currentXRef.current(time)).style('opacity', 1);
 
@@ -947,7 +1048,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
             try {
               const timeUnit = convertTicksToUnit(time, data.timescale, displayUnit).toFixed(3);
               const sig: VCDSignal = row.signal;
-              const val = getSignalValueAt(sig, time);
+              const val = getDisplaySignalValueAt(sig, time);
               let hex = 'X';
               let dec: string | number = 'X';
 
@@ -980,7 +1081,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
       svg.on('.zoom', null);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [data, visibleSignals, displayUnit, protocolDecoders, selectedEvent, selectedSignalName, groups, onToggleGroup, onSelectEvent, onSelectSignal, zoom, movedSignalName, onReorderSignal]);
+  }, [data, visibleSignals, displayUnit, protocolDecoders, selectedEvent, selectedSignalName, groups, onToggleGroup, onSelectEvent, onSelectSignal, movedSignalName, onReorderSignal, containerWidth]);
 
   return (
     <div className="relative w-full bg-[#141414] rounded-lg border border-[#333] p-4 flex flex-col gap-4">
@@ -1036,8 +1137,8 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
       {tooltip && (
         <div style={{ left: tooltip.x, top: tooltip.y }} className="absolute z-50 pointer-events-none">
           <div className="bg-black text-white p-2 rounded text-xs font-mono whitespace-pre-line max-w-[320px] border border-[#333]">
-            <div className="font-bold mb-1">{tooltip.title}</div>
-            <div>{tooltip.body}</div>
+            <div className="font-bold mb-1" style={{ color: tooltip.accentColor }}>{tooltip.title}</div>
+            <div style={{ color: tooltip.accentColor }}>{tooltip.body}</div>
           </div>
         </div>
       )}

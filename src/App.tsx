@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { Upload, Cpu, Activity, Settings, Plus, Trash2, ChevronRight, ChevronLeft, FileText } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { parseVCD, VCDData, decodeUART, decodeSPI, decodeAvalon, DecodedEvent, calculateSignalFrequency, calculateSignalMeasurements, detectBestDisplayUnit } from './utils/vcd';
@@ -42,20 +42,31 @@ export default function App() {
   const [displayUnit, setDisplayUnit] = useState<string>('ns');
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [isSidebarResizing, setIsSidebarResizing] = useState(false);
   const [signalSearchTerm, setSignalSearchTerm] = useState<string>('');
 
   const handleResizeStart = React.useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const startX = e.clientX;
     const startWidth = sidebarWidth;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+
+    setIsSidebarResizing(true);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
 
     const handleMouseMove = (me: MouseEvent) => {
       const delta = me.clientX - startX;
-      const newWidth = Math.max(200, Math.min(600, startWidth + delta));
+      const maxWidth = Math.min(720, Math.floor(window.innerWidth * 0.6));
+      const newWidth = Math.max(220, Math.min(maxWidth, startWidth + delta));
       setSidebarWidth(newWidth);
     };
 
     const handleMouseUp = () => {
+      setIsSidebarResizing(false);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
@@ -459,7 +470,17 @@ export default function App() {
     setProtocols(protocols.filter(p => p.id !== id));
   };
 
-  const decodedProtocols = protocols.map(p => {
+  const signalNames = useMemo(() => (
+    vcdData ? Array.from(vcdData.signals.keys()) : []
+  ), [vcdData]);
+
+  const filteredSignalNames = useMemo(() => {
+    const search = signalSearchTerm.toLowerCase();
+    if (!search) return signalNames;
+    return signalNames.filter(name => name.toLowerCase().includes(search));
+  }, [signalNames, signalSearchTerm]);
+
+  const decodedProtocols = useMemo(() => protocols.map(p => {
     let decoded: DecodedEvent[] = [];
     if (!vcdData) return { ...p, decoded };
 
@@ -494,10 +515,10 @@ export default function App() {
       }
     }
     return { ...p, decoded };
-  });
+  }), [protocols, vcdData]);
 
   // Represent protocols as groups so they appear in the waveform grouping area
-  const protocolGroups: SignalGroup[] = decodedProtocols.map(p => ({
+  const protocolGroups: SignalGroup[] = useMemo(() => decodedProtocols.map(p => ({
     id: `proto_${p.id}`,
     name: (() => {
       if (p.type === 'Avalon') {
@@ -536,7 +557,7 @@ export default function App() {
       return ordered;
     })(),
     collapsed: p.collapsed ?? true
-  }));
+  })), [decodedProtocols]);
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-[#e4e3e0] font-sans selection:bg-[#f27d26] selection:text-black">
@@ -568,7 +589,13 @@ export default function App() {
 
       <main className="flex h-[calc(100vh-120px)]">
         {/* Resizable Left Sidebar */}
-        <div className="flex flex-col border-r border-[#333] bg-[#0a0a0a] transition-all duration-300" style={{ width: sidebarCollapsed ? '50px' : `${sidebarWidth}px` }}>
+        <div
+          className={cn(
+            "relative flex flex-col flex-shrink-0 border-r border-[#333] bg-[#0a0a0a]",
+            isSidebarResizing ? "" : "transition-all duration-300"
+          )}
+          style={{ width: sidebarCollapsed ? '50px' : `${sidebarWidth}px` }}
+        >
           {/* Sidebar Toggle Button */}
           <div className="flex-shrink-0 p-2 flex justify-end border-b border-[#333]">
             <button
@@ -593,7 +620,7 @@ export default function App() {
                 </div>
                 <div className="flex gap-2">
                   <button 
-                    onClick={() => setVisibleSignals(Array.from(vcdData.signals.keys()))}
+                    onClick={() => setVisibleSignals(signalNames)}
                     className="text-[10px] font-mono text-[#f27d26] hover:text-[#f27d26]/80 border border-[#f27d26]/30 px-1.5 rounded transition-colors"
                   >
                     ALL
@@ -614,9 +641,7 @@ export default function App() {
                 className="w-full bg-[#0a0a0a] border border-[#333] rounded px-2 py-1.5 text-xs font-mono text-gray-400 placeholder-gray-600 mb-3 focus:outline-none focus:border-[#f27d26] transition-colors"
               />
               <div className="space-y-1">
-                {Array.from(vcdData.signals.keys())
-                  .filter(name => name.toLowerCase().includes(signalSearchTerm.toLowerCase()))
-                  .map((name: string) => (
+                {filteredSignalNames.map((name: string) => (
                   <label key={name} className="flex items-center gap-2 p-1 hover:bg-[#222] rounded cursor-pointer group">
                     <input 
                       type="checkbox"
@@ -699,7 +724,7 @@ export default function App() {
                       className="w-full bg-[#141414] border border-[#333] rounded p-1 text-xs font-mono"
                     >
                       <option value="">Select Signal</option>
-                      {vcdData && Array.from(vcdData.signals.keys()).map(name => (
+                      {vcdData && signalNames.map(name => (
                         <option key={name} value={name}>{name}</option>
                       ))}
                     </select>
@@ -732,7 +757,7 @@ export default function App() {
                             className="w-full bg-[#141414] border border-[#333] rounded p-1 text-xs font-mono"
                           >
                             <option value="">None</option>
-                            {vcdData && Array.from(vcdData.signals.keys()).map(name => (
+                            {vcdData && signalNames.map(name => (
                               <option key={name} value={name}>{name}</option>
                             ))}
                           </select>
@@ -780,7 +805,7 @@ export default function App() {
                             className="w-full bg-[#141414] border border-[#333] rounded p-1 text-xs font-mono"
                           >
                             <option value="">None</option>
-                            {vcdData && Array.from(vcdData.signals.keys()).map(name => (
+                            {vcdData && signalNames.map(name => (
                               <option key={name} value={name}>{name}</option>
                             ))}
                           </select>
@@ -858,7 +883,7 @@ export default function App() {
                       className="w-full bg-[#141414] border border-[#333] rounded p-1 text-xs font-mono"
                     >
                       <option value="">Add Signal...</option>
-                      {vcdData && Array.from(vcdData.signals.keys()).map(name => (
+                      {vcdData && signalNames.map(name => (
                         <option key={name} value={name}>{name}</option>
                       ))}
                     </select>
@@ -873,18 +898,20 @@ export default function App() {
           </div>
           )}
 
-          {/* Resize Handle */}
           {!sidebarCollapsed && (
-          <div
-            onMouseDown={handleResizeStart}
-            className="w-1 bg-[#333] hover:bg-[#f27d26] cursor-col-resize transition-colors flex-shrink-0"
-            title="Drag to resize sidebar"
-          />
+            <div
+              onMouseDown={handleResizeStart}
+              className={cn(
+                "absolute right-[-3px] top-0 z-20 h-full w-2 cursor-col-resize transition-colors",
+                isSidebarResizing ? "bg-[#f27d26]" : "bg-transparent hover:bg-[#f27d26]"
+              )}
+              title="Drag to resize sidebar"
+            />
           )}
         </div>
 
         {/* Main Viewer Area */}
-        <div className={cn("flex-1 overflow-y-auto flex flex-col", sidebarCollapsed ? "p-3" : "p-6")}>
+        <div className={cn("flex-1 min-w-0 overflow-y-auto flex flex-col", sidebarCollapsed ? "p-3" : "p-6")}>
           {!vcdData ? (
             <div 
               onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
@@ -906,7 +933,7 @@ export default function App() {
               <p className="text-gray-500 font-mono text-sm">or click LOAD VCD in the header</p>
             </div>
           ) : (
-            <div className={cn("flex-1 flex flex-col", sidebarCollapsed ? "space-y-2" : "space-y-6")}>
+            <div className={cn("flex-1 min-w-0 flex flex-col", sidebarCollapsed ? "space-y-2" : "space-y-6")}>
               {/* Measurement Bar - doesn't grow */}
               <div className="flex-shrink-0">
                 <AnimatePresence>
@@ -975,7 +1002,7 @@ export default function App() {
               </div>
 
               {/* Waveform Viewer - grows to fill available space */}
-              <div className="flex-1 overflow-hidden">
+              <div className="flex-1 min-w-0 overflow-hidden">
                 <WaveformViewer 
                   data={vcdData} 
                   visibleSignals={visibleSignals}
@@ -1007,7 +1034,7 @@ export default function App() {
           {vcdData && <span>Memory: {(JSON.stringify(vcdData).length / 1024 / 1024).toFixed(2)} MB</span>}
         </div>
         <div>
-          v1.0.3
+          v1.0.5
         </div>
       </footer>
     </div>

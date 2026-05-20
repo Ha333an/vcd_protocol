@@ -1,7 +1,7 @@
 {
   "name": "vcd-analyzer",
   "private": true,
-  "version": "1.0.3",
+  "version": "1.0.5",
   "icon": "icon.png",
   "scripts": {
     "start": "npm run dev",
@@ -62,17 +62,25 @@
     "vscode": "^1.79.0"
   },
   "main": "out/extension.js",
-  "activationEvents": [
-    "onCommand:vcdProtocol.openViewer",
-    "onLanguage:vcd",
-    "onCustomEditor:vcdProtocol.viewer"
-  ],
   "contributes": {
     "languages": [
       {
         "id": "vcd",
-        "extensions": [".vcd"],
-        "aliases": ["VCD"]
+        "extensions": [
+          ".vcd"
+        ],
+        "aliases": [
+          "VCD"
+        ]
+      },
+      {
+        "id": "wlf",
+        "extensions": [
+          ".wlf"
+        ],
+        "aliases": [
+          "WLF"
+        ]
       }
     ],
     "customEditors": [
@@ -81,8 +89,10 @@
         "displayName": "VCD Viewer",
         "selector": [
           {
-            "filenamePattern": "*.vcd",
-            "priority": "default"
+            "filenamePattern": "*.vcd"
+          },
+          {
+            "filenamePattern": "*.wlf"
           }
         ]
       }
@@ -90,7 +100,7 @@
     "commands": [
       {
         "command": "vcdProtocol.openViewer",
-        "title": "Open VCD Viewer"
+        "title": "Open VCD/WLF Viewer"
       }
     ]
   }

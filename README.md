@@ -4,6 +4,7 @@ VCD Protocol Analyzer is a lightweight viewer designed to open VCD (Value Change
 
 Key features
 - Open .vcd files in VS Code or in the local dev server UI
+- Open .wlf files in VS Code by auto-converting them to VCD via `wlf2vcd`
 - Auto-detects and decodes protocols such as Avalon-MM (Avalon memory-mapped), UART, and SPI
 - Renders detected protocols as groups with event overlays and highlights
 - Tooltips for protocol events and individual signals with hex/decimal values
@@ -25,7 +26,8 @@ Prerequisites: Node.js (and npm)
    `npm run dev`
 
 ## Usage in VS Code
-- Open a `.vcd` file and run the `Open VCD Viewer` command (or open the custom editor if installed as an extension).
+- For `.wlf` files, install `wlf2vcd` and ensure it is available in your system `PATH`.
+- Open a `.vcd` or `.wlf` file and run the `Open VCD/WLF Viewer` command (or open the custom editor if installed as an extension).
 - Use the left panel to select signals, group them, and toggle visibility.
 - Search for signals using the searchbar in the "Visible Signals" section to quickly find signals in large projects.
 - Click the chevron button in the top-right of the sidebar to collapse/expand it, giving more space to the waveform viewer.

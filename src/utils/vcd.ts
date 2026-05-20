@@ -248,14 +248,25 @@ export function decodeUART(
   return events;
 }
 
-function getSignalValueAt(signal: VCDSignal, time: number): string {
-  // Binary search or simple find
-  let lastVal = 'x';
-  for (const v of signal.values) {
-    if (v.time > time) return lastVal;
-    lastVal = v.value;
+export function getSignalValueAt(signal: VCDSignal, time: number, beforeFirstValue = 'x'): string {
+  const values = signal.values;
+  if (!values || values.length === 0) return beforeFirstValue;
+
+  let low = 0;
+  let high = values.length - 1;
+  let resultIndex = -1;
+
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (values[mid].time <= time) {
+      resultIndex = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
   }
-  return lastVal;
+
+  return resultIndex === -1 ? beforeFirstValue : values[resultIndex].value;
 }
 
 export function decodeSPI(

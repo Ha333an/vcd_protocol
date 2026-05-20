@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.5] - 2026-05-20
+
+### Added
+- Support for opening `.wlf` files in the custom viewer.
+
+### Changed
+- `.wlf` files are converted to VCD using `wlf2vcd` before rendering.
+- `Open VCD Viewer` command renamed to `Open VCD/WLF Viewer`.
+- Improved waveform performance for large traces and protocol decoding.
+- Sidebar collapse and resize behavior now expands the waveform correctly.
+- Marker labels use staggered rows to avoid unreadable overlap.
+
+### Fixed
+- Clicking RD/WR protocol indicators no longer resets the waveform zoom.
+- RD/WR hover text now matches the protocol indicator colors.
+
 ## [1.0.3] - 2024-03-02
 
 ### Added
