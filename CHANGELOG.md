@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2026-09-11
+
+### Added
+- **I2C Protocol Decoder**: Full decoding support for I2C (START, 7-bit Address, R/W, ACK/NACK, data bytes, STOP) with auto-detection.
+- **Bus Radix Selection**: Ability to toggle bus value formats between HEX, Unsigned Decimal, Signed Decimal, Binary, and ASCII.
+- **Export Decoded Transactions**: Toolbar button to export decoded protocol packets directly to CSV.
+- **Automated Unit Testing**: Integrated Vitest test runner with 17 unit tests covering parsers, decoders, and measurement routines.
+- **Modular Component Architecture**: Decomposed UI into specialized sidebar components (`VisibleSignalsSection`, `ProtocolsSection`, `SignalGroupsSection`) and `MeasurementBar`.
+
+### Changed
+- **Major VCD Parser Optimization**: Switched to an index-based line iterator in `parseVCD`, eliminating millions of string allocations and intermediate file duplications.
+- **Memory & Performance Hotfix**: Replaced repeated `JSON.stringify` in the render loop with raw file byte size tracking and signal counts.
+- **Cross-Platform Build**: Updated clean and build scripts to be cross-platform compatible with Windows PowerShell / Command Prompt.
+
+### Removed
+- Pruned 72 unneeded dependencies from `package.json` and `node_modules` (`better-sqlite3`, `express`, `dotenv`, `vcd-parser`, and WASM runtime packages).
+
 ## [1.0.6] - 2026-05-20
 
 ### Added

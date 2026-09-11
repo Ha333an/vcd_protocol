@@ -29,20 +29,22 @@ export function parseVCD(content: string): VCDData {
   const endDefinitionsIdx = content.indexOf('$enddefinitions');
   if (endDefinitionsIdx === -1) return { timescale, signals, maxTime };
 
-  const header = content.substring(0, endDefinitionsIdx);
-  const data = content.substring(endDefinitionsIdx + '$enddefinitions'.length);
-
   // Parse Header more robustly
   // Extract timescale
-  const timescaleMatch = header.match(/\$timescale\s+([\d\s\w]+)\s+\$end/);
+  const timescaleMatch = content.slice(0, endDefinitionsIdx).match(/\$timescale\s+([\d\s\w]+)\s+\$end/);
   if (timescaleMatch) {
     timescale = timescaleMatch[1].trim().replace(/\s+/g, '');
   }
 
   // Parse scopes and vars in header
-  const headerLines = header.split('\n');
-  for (let line of headerLines) {
-    line = line.trim();
+  let headerPos = 0;
+  while (headerPos < endDefinitionsIdx) {
+    let nextNewline = content.indexOf('\n', headerPos);
+    if (nextNewline === -1 || nextNewline > endDefinitionsIdx) {
+      nextNewline = endDefinitionsIdx;
+    }
+    const line = content.slice(headerPos, nextNewline).trim();
+    headerPos = nextNewline + 1;
     if (!line) continue;
 
     if (line.startsWith('$scope')) {
@@ -53,7 +55,7 @@ export function parseVCD(content: string): VCDData {
     } else if (line.startsWith('$var')) {
       const parts = line.split(/\s+/);
       const type = parts[1] as 'wire' | 'reg';
-      const size = parseInt(parts[2]);
+      const size = parseInt(parts[2], 10);
       const id = parts[3];
       
       const nameParts = [];
@@ -71,30 +73,43 @@ export function parseVCD(content: string): VCDData {
     }
   }
 
-  // Parse Data
-  const dataLines = data.split('\n');
-  for (let line of dataLines) {
-    line = line.trim();
+  // Parse Data directly from content without duplicating data string or allocating millions of array elements
+  let dataPos = endDefinitionsIdx + '$enddefinitions'.length;
+  const contentLen = content.length;
+
+  while (dataPos < contentLen) {
+    let nextNewline = content.indexOf('\n', dataPos);
+    if (nextNewline === -1) nextNewline = contentLen;
+    const line = content.slice(dataPos, nextNewline).trim();
+    dataPos = nextNewline + 1;
     if (!line) continue;
 
-    if (line.startsWith('#')) {
-      currentTime = parseInt(line.substring(1));
+    const firstChar = line.charCodeAt(0);
+    if (firstChar === 35 /* '#' */) {
+      currentTime = parseInt(line.substring(1), 10);
       if (currentTime > maxTime) maxTime = currentTime;
-    } else if (line.startsWith('$')) {
+    } else if (firstChar === 36 /* '$' */) {
       continue; // Skip other commands in data section
+    } else if (firstChar === 98 || firstChar === 66 /* 'b' or 'B' */) {
+      const spaceIdx = line.indexOf(' ');
+      if (spaceIdx !== -1) {
+        const value = line.substring(1, spaceIdx);
+        const id = line.substring(spaceIdx + 1).trim();
+        const sigs = idToSignals.get(id);
+        if (sigs) {
+          for (let s = 0; s < sigs.length; s++) {
+            sigs[s].values.push({ time: currentTime, value });
+          }
+        }
+      }
     } else {
-      // Value change
-      if (line.startsWith('b') || line.startsWith('B')) {
-        const parts = line.split(/\s+/);
-        const value = parts[0].substring(1);
-        const id = parts[1];
-        const sigs = idToSignals.get(id);
-        if (sigs) sigs.forEach(s => s.values.push({ time: currentTime, value }));
-      } else {
-        const value = line[0];
-        const id = line.substring(1);
-        const sigs = idToSignals.get(id);
-        if (sigs) sigs.forEach(s => s.values.push({ time: currentTime, value }));
+      const value = line[0];
+      const id = line.substring(1).trim();
+      const sigs = idToSignals.get(id);
+      if (sigs) {
+        for (let s = 0; s < sigs.length; s++) {
+          sigs[s].values.push({ time: currentTime, value });
+        }
       }
     }
   }
@@ -637,4 +652,144 @@ export function binToHex(bin: string): string {
   } catch {
     return 'X';
   }
+}
+
+export function formatBusValue(
+  bin: string,
+  radix: 'hex' | 'dec' | 'signed' | 'bin' | 'ascii' = 'hex'
+): string {
+  if (!bin) return 'X';
+  if (bin.match(/[uUxXzZwWl LhH-]/)) {
+    return binToHex(bin);
+  }
+  try {
+    const val = BigInt('0b' + bin);
+    switch (radix) {
+      case 'bin':
+        return 'b' + bin;
+      case 'dec':
+        return val.toString(10);
+      case 'signed': {
+        const bitLen = bin.length;
+        if (bitLen > 1 && bin[0] === '1') {
+          const maxVal = BigInt(1) << BigInt(bitLen);
+          return (val - maxVal).toString(10);
+        }
+        return val.toString(10);
+      }
+      case 'ascii': {
+        let str = '';
+        for (let i = 0; i < bin.length; i += 8) {
+          const slice = bin.slice(i, i + 8);
+          if (slice.length === 8) {
+            const code = parseInt(slice, 2);
+            str += (code >= 32 && code <= 126) ? String.fromCharCode(code) : '.';
+          }
+        }
+        return str || `0x${val.toString(16).toUpperCase()}`;
+      }
+      case 'hex':
+      default:
+        return '0x' + val.toString(16).toUpperCase();
+    }
+  } catch {
+    return 'X';
+  }
+}
+
+export function decodeI2C(
+  scl: VCDSignal,
+  sda: VCDSignal
+): DecodedEvent[] {
+  const events: DecodedEvent[] = [];
+  if (!scl || !sda || scl.values.length < 2 || sda.values.length < 2) return [];
+
+  const timeSet = new Set<number>();
+  for (let i = 0; i < scl.values.length; i++) timeSet.add(scl.values[i].time);
+  for (let i = 0; i < sda.values.length; i++) timeSet.add(sda.values[i].time);
+  const sortedTimes = Array.from(timeSet).sort((a, b) => a - b);
+
+  let inTransaction = false;
+  let byteBits: number[] = [];
+  let byteStartTime = -1;
+  let isFirstByteInPacket = true;
+  let lastSclVal = getSignalValueAt(scl, sortedTimes[0]);
+  let lastSdaVal = getSignalValueAt(sda, sortedTimes[0]);
+
+  for (let i = 1; i < sortedTimes.length; i++) {
+    const t = sortedTimes[i];
+    const currScl = getSignalValueAt(scl, t);
+    const currSda = getSignalValueAt(sda, t);
+
+    // Check for Start Condition: SDA falling edge while SCL is high ('1')
+    if (lastSclVal === '1' && currScl === '1' && lastSdaVal === '1' && currSda === '0') {
+      events.push({
+        startTime: t,
+        endTime: t + 1,
+        data: 'START',
+        label: 'START'
+      });
+      inTransaction = true;
+      byteBits = [];
+      byteStartTime = -1;
+      isFirstByteInPacket = true;
+    }
+    // Check for Stop Condition: SDA rising edge while SCL is high ('1')
+    else if (lastSclVal === '1' && currScl === '1' && lastSdaVal === '0' && currSda === '1') {
+      events.push({
+        startTime: t,
+        endTime: t + 1,
+        data: 'STOP',
+        label: 'STOP'
+      });
+      inTransaction = false;
+      byteBits = [];
+      byteStartTime = -1;
+      isFirstByteInPacket = true;
+    }
+    // Check for SCL Rising Edge to sample SDA data bit
+    else if (inTransaction && lastSclVal === '0' && currScl === '1') {
+      if (byteStartTime === -1) byteStartTime = t;
+      const bitVal = currSda === '1' ? 1 : 0;
+      byteBits.push(bitVal);
+
+      if (byteBits.length === 9) {
+        // 8 data bits (MSB first) + 1 ACK/NACK bit (bit 8: 0 = ACK, 1 = NACK)
+        let byte = 0;
+        for (let b = 0; b < 8; b++) {
+          if (byteBits[b]) byte |= (1 << (7 - b));
+        }
+        const ack = byteBits[8] === 0;
+        const ackStr = ack ? 'ACK' : 'NACK';
+        const hexByte = byte.toString(16).toUpperCase().padStart(2, '0');
+
+        if (isFirstByteInPacket) {
+          const addr = (byte >> 1).toString(16).toUpperCase().padStart(2, '0');
+          const rw = (byte & 1) ? 'RD' : 'WR';
+          events.push({
+            startTime: byteStartTime,
+            endTime: t,
+            data: `Addr: 0x${addr} (${rw}), ${ackStr}`,
+            label: `@0x${addr} ${rw} [${ackStr}]`
+          });
+          isFirstByteInPacket = false;
+        } else {
+          events.push({
+            startTime: byteStartTime,
+            endTime: t,
+            data: `Data: 0x${hexByte}, ${ackStr}`,
+            label: `0x${hexByte} [${ackStr}]`
+          });
+        }
+
+        byteBits = [];
+        byteStartTime = -1;
+      }
+    }
+
+    lastSclVal = currScl;
+    lastSdaVal = currSda;
+  }
+
+  return events;
 }

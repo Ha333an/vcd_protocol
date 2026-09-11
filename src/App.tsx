@@ -1,31 +1,18 @@
-import React, { useState, useCallback, useMemo } from 'react';
-import { Upload, Cpu, Activity, Settings, Plus, Trash2, ChevronRight, ChevronLeft, ChevronDown, FileText } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
-import { parseVCD, VCDData, decodeUART, decodeSPI, decodeAvalon, DecodedEvent, calculateSignalFrequency, calculateSignalMeasurements, detectBestDisplayUnit } from './utils/vcd';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import { Upload, ChevronRight, ChevronLeft } from 'lucide-react';
+import { motion } from 'motion/react';
+import { parseVCD, decodeUART, decodeSPI, decodeAvalon, decodeI2C, detectBestDisplayUnit } from './utils/vcd';
+import { ProtocolConfig, SignalGroup, VCDData, DecodedEvent } from './types';
 import { WaveformViewer } from './components/WaveformViewer';
+import { VisibleSignalsSection } from './components/Sidebar/VisibleSignalsSection';
+import { ProtocolsSection } from './components/Sidebar/ProtocolsSection';
+import { SignalGroupsSection } from './components/Sidebar/SignalGroupsSection';
+import { MeasurementBar } from './components/Measurements/MeasurementBar';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
-}
-
-interface ProtocolConfig {
-  id: string;
-  type: 'UART' | 'SPI' | 'Avalon';
-  signals: string[];
-  config: {
-    baudRate?: number;
-    cpol?: number;
-    cpha?: number;
-  };
-  collapsed?: boolean;
-}
-
-interface SignalGroup {
-  id: string;
-  name: string;
-  signalNames: string[];
-  collapsed?: boolean;
 }
 
 export default function App() {
@@ -40,15 +27,15 @@ export default function App() {
   const [selectedSignalName, setSelectedSignalName] = useState<string | null>(null);
   const [movedSignalName, setMovedSignalName] = useState<string | null>(null);
   const [displayUnit, setDisplayUnit] = useState<string>('ns');
+  const [fileSizeBytes, setFileSizeBytes] = useState<number | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isSidebarResizing, setIsSidebarResizing] = useState(false);
   const [visibleSignalsCollapsed, setVisibleSignalsCollapsed] = useState(false);
   const [protocolsCollapsed, setProtocolsCollapsed] = useState(false);
   const [signalGroupsCollapsed, setSignalGroupsCollapsed] = useState(false);
-  const [signalSearchTerm, setSignalSearchTerm] = useState<string>('');
 
-  const handleResizeStart = React.useCallback((e: React.MouseEvent) => {
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const startX = e.clientX;
     const startWidth = sidebarWidth;
@@ -78,20 +65,12 @@ export default function App() {
     document.addEventListener('mouseup', handleMouseUp);
   }, [sidebarWidth]);
 
-  const loadVcdContent = useCallback((content: string) => {
+  const loadVcdContent = useCallback((content: string, byteSize?: number) => {
+    setFileSizeBytes(byteSize ?? (typeof content === 'string' ? content.length : null));
     const parsed = parseVCD(content);
     setVcdData(parsed);
-    // Debug: log parsed signal summary to help track missing signals like led_out
-    try {
-      console.log('VCD parsed signals count:', parsed.signals.size);
-      // show first 30 signal names
-      console.log('First signals:', Array.from(parsed.signals.keys()).slice(0, 30));
-      const ledKey = Array.from(parsed.signals.keys()).find(k => k.toLowerCase().endsWith('.led_out') || k.toLowerCase().endsWith('led_out'));
-      if (ledKey) console.log('led_out signal values (first 10):', parsed.signals.get(ledKey)?.values.slice(0, 10));
-    } catch (e) { console.warn('Signal debug log failed', e); }
     setVisibleSignals(Array.from(parsed.signals.keys()).slice(0, 10));
 
-    // Auto-detect a sensible display unit based on timescale + duration
     try {
       const unit = detectBestDisplayUnit(parsed.timescale, parsed.maxTime);
       setDisplayUnit(unit);
@@ -102,35 +81,34 @@ export default function App() {
     setGroups([]);
     setSelectedEvent(null);
     setSelectedSignalName(null);
-    // Auto-detect protocols for convenience
+
     try {
       autoDetectProtocols(parsed);
     } catch {}
   }, []);
 
   const handleFileUpload = useCallback((file: File) => {
+    const size = file.size;
     const reader = new FileReader();
     reader.onload = (e) => {
       const content = e.target?.result as string;
-      loadVcdContent(content);
+      loadVcdContent(content, size);
     };
     reader.readAsText(file);
-  }, []);
+  }, [loadVcdContent]);
 
-  // If running inside a VS Code webview, listen for messages from the extension
-  React.useEffect(() => {
+  useEffect(() => {
     const handler = (event: MessageEvent) => {
       const msg = (event as any).data;
       if (msg?.type === 'openVCD' && msg.content) {
-        loadVcdContent(msg.content);
+        loadVcdContent(msg.content, typeof msg.content === 'string' ? msg.content.length : undefined);
       }
     };
     if (typeof window !== 'undefined') window.addEventListener('message', handler as any);
     return () => { if (typeof window !== 'undefined') window.removeEventListener('message', handler as any); };
   }, [loadVcdContent]);
 
-  // Notify the extension that the webview is ready to receive messages.
-  React.useEffect(() => {
+  useEffect(() => {
     try {
       const anyWindow = window as any;
       if (anyWindow && typeof anyWindow.acquireVsCodeApi === 'function') {
@@ -146,24 +124,21 @@ export default function App() {
       signalNames: [],
       collapsed: false
     };
-    setGroups([...groups, newGroup]);
-    };
+    setGroups(prev => [...prev, newGroup]);
+  };
 
   const toggleGroupCollapse = (id: string) => {
-    // If this is a protocol group (proto_<id>), toggle collapsed on protocols state
     const protoPrefix = 'proto_';
     if (id.startsWith(protoPrefix)) {
       const pid = id.substring(protoPrefix.length);
-      setProtocols(protocols.map(p => p.id === pid ? { ...p, collapsed: !p.collapsed } : p));
+      setProtocols(prev => prev.map(p => p.id === pid ? { ...p, collapsed: !p.collapsed } : p));
       return;
     }
-
-    setGroups(groups.map(g => g.id === id ? { ...g, collapsed: !g.collapsed } : g));
+    setGroups(prev => prev.map(g => g.id === id ? { ...g, collapsed: !g.collapsed } : g));
   };
 
   const handleSelectGroup = (id: string | null) => {
     setSelectedGroupId(prev => prev === id ? null : id);
-    // clear selected signal when selecting a group
     setSelectedSignalName(null);
   };
 
@@ -172,8 +147,6 @@ export default function App() {
     setGroups(prev => prev.map(g => ({ ...g, signalNames: g.signalNames.filter(n => n !== name) })));
     if (selectedSignalName === name) setSelectedSignalName(null);
   };
-
-  
 
   const handleDeleteGroup = (id: string) => {
     removeGroup(id);
@@ -188,34 +161,32 @@ export default function App() {
   };
 
   const updateGroup = (id: string, updates: Partial<SignalGroup>) => {
-    setGroups(groups.map(g => g.id === id ? { ...g, ...updates } : g));
+    setGroups(prev => prev.map(g => g.id === id ? { ...g, ...updates } : g));
   };
 
   const removeGroup = (id: string) => {
-    setGroups(groups.filter(g => g.id !== id));
+    setGroups(prev => prev.filter(g => g.id !== id));
   };
 
   const addSignalToGroup = (groupId: string, signalName: string) => {
-    setGroups(groups.map(g => {
+    setGroups(prev => prev.map(g => {
       if (g.id === groupId && !g.signalNames.includes(signalName)) {
         return { ...g, signalNames: [...g.signalNames, signalName] };
       }
       return g;
     }));
-    // Remove from ungrouped visible signals if it was there
-    setVisibleSignals(visibleSignals.filter(s => s !== signalName));
+    setVisibleSignals(prev => prev.filter(s => s !== signalName));
   };
 
   const removeSignalFromGroup = (groupId: string, signalName: string) => {
-    setGroups(groups.map(g => {
+    setGroups(prev => prev.map(g => {
       if (g.id === groupId) {
         return { ...g, signalNames: g.signalNames.filter(s => s !== signalName) };
       }
       return g;
     }));
-    // Add back to ungrouped visible signals
     if (!visibleSignals.includes(signalName)) {
-      setVisibleSignals([...visibleSignals, signalName]);
+      setVisibleSignals(prev => [...prev, signalName]);
     }
   };
 
@@ -224,7 +195,6 @@ export default function App() {
     const oldGroupId = oldGroup ? oldGroup.id : null;
 
     if (oldGroupId === toGroupId) {
-      // reorder within same container
       if (toGroupId === null) {
         const arr = [...visibleSignals.filter(s => s !== signalName)];
         const idx = Math.max(0, Math.min(toIndex, arr.length));
@@ -242,20 +212,17 @@ export default function App() {
       return;
     }
 
-    // remove from old
     if (oldGroupId === null) {
       setVisibleSignals(prev => prev.filter(s => s !== signalName));
     } else {
       setGroups(prev => prev.map(g => g.id === oldGroupId ? { ...g, signalNames: g.signalNames.filter(s => s !== signalName) } : g));
     }
 
-    // insert into new
     if (toGroupId === null) {
       setVisibleSignals(prev => {
         const arr = [...prev];
         const idx = Math.max(0, Math.min(toIndex, arr.length));
         arr.splice(idx, 0, signalName);
-        // flash moved signal
         setMovedSignalName(signalName);
         setTimeout(() => setMovedSignalName(null), 1100);
         return arr;
@@ -277,7 +244,6 @@ export default function App() {
     if (!vcdData) return;
     const allSignals = Array.from(vcdData.signals.keys());
 
-    // 1) Suffix-based grouping (existing behavior)
     const potentialGroups = new Map<string, string[]>();
     const suffixRegex = /(.+?)(?:_(\d+)|\[(\d+)\]|(\d+))$/;
     allSignals.forEach((sig: string) => {
@@ -289,7 +255,6 @@ export default function App() {
       }
     });
 
-    // 2) Hierarchy-based grouping using dot separators (parent path before last dot)
     const parentMap = new Map<string, string[]>();
     allSignals.forEach((sig: string) => {
       const idx = sig.lastIndexOf('.');
@@ -303,15 +268,14 @@ export default function App() {
     const newGroups: SignalGroup[] = [];
     const signalsToMove = new Set<string>();
 
-    // Create suffix groups first (keep original sorting by numeric suffix)
     potentialGroups.forEach((sigs: string[], prefix: string) => {
       if (sigs.length > 1) {
         newGroups.push({
           id: Math.random().toString(36).substr(2, 9),
           name: prefix.replace(/[._\[]$/, ''),
           signalNames: sigs.sort((a: string, b: string) => {
-            const aNum = parseInt(a.match(/\d+$/)?.[0] || '0');
-            const bNum = parseInt(b.match(/\d+$/)?.[0] || '0');
+            const aNum = parseInt(a.match(/\d+$/)?.[0] || '0', 10);
+            const bNum = parseInt(b.match(/\d+$/)?.[0] || '0', 10);
             return bNum - aNum;
           }),
           collapsed: true
@@ -320,7 +284,6 @@ export default function App() {
       }
     });
 
-    // Then create hierarchy groups for parent paths, but skip signals already grouped
     parentMap.forEach((sigs: string[], parent: string) => {
       const filtered = sigs.filter(s => !signalsToMove.has(s));
       if (filtered.length > 1) {
@@ -335,8 +298,8 @@ export default function App() {
     });
 
     if (newGroups.length > 0) {
-      setGroups([...groups, ...newGroups]);
-      setVisibleSignals(visibleSignals.filter(s => !signalsToMove.has(s)));
+      setGroups(prev => [...prev, ...newGroups]);
+      setVisibleSignals(prev => prev.filter(s => !signalsToMove.has(s)));
     }
   };
 
@@ -356,7 +319,7 @@ export default function App() {
       config: { baudRate: 9600 },
       collapsed: false
     };
-    setProtocols([...protocols, newProtocol]);
+    setProtocols(prev => [...prev, newProtocol]);
   };
 
   const autoDetectProtocols = (vcd?: VCDData) => {
@@ -364,14 +327,11 @@ export default function App() {
     if (!data) return;
 
     const detected: ProtocolConfig[] = [];
-
-    // Helper: normalize name parts
     const leaf = (name: string) => {
       const parts = name.split('.');
       return parts[parts.length - 1].toLowerCase();
     };
 
-    // Build parent map to group signals by common prefix
     const parentMap = new Map<string, string[]>();
     Array.from(data.signals.keys()).forEach((name: string) => {
       const idx = name.lastIndexOf('.');
@@ -380,15 +340,11 @@ export default function App() {
       parentMap.get(parent)!.push(name);
     });
 
-    // 1) Detect SPI: look for parent groups with sclk + (mosi|miso)
-    parentMap.forEach((names, parent) => {
+    // 1) Detect SPI
+    parentMap.forEach((names) => {
       const lower = new Set(names.map(n => leaf(n)));
       const hasSCLK = Array.from(lower).some(n => n.includes('sclk') || n === 'sclk' || n === 'clk_s');
-      const hasMOSI = Array.from(lower).some(n => n.includes('mosi') || n === 'mosi');
-      const hasMISO = Array.from(lower).some(n => n.includes('miso') || n === 'miso');
-      const hasCS = Array.from(lower).some(n => n === 'cs' || n.includes('cs') || n.includes('chipselect'));
       if (hasSCLK) {
-        // find signal full names
         const sclk = names.find(n => leaf(n).includes('sclk') || leaf(n) === 'sclk' || leaf(n) === 'clk_s');
         const mosi = names.find(n => leaf(n).includes('mosi') || leaf(n) === 'mosi');
         const miso = names.find(n => leaf(n).includes('miso') || leaf(n) === 'miso');
@@ -399,7 +355,7 @@ export default function App() {
       }
     });
 
-    // 2) Detect UART: look for signals named *rx or *tx or global names containing 'uart'
+    // 2) Detect UART
     const allNames = Array.from(data.signals.keys()) as string[];
     const rx = allNames.find(n => /(^|\.|_)(rx|rxd|uart_rx)$/.test(n.toLowerCase()));
     const tx = allNames.find(n => /(^|\.|_)(tx|txd|uart_tx)$/.test(n.toLowerCase()));
@@ -408,15 +364,14 @@ export default function App() {
       detected.push({ id: Math.random().toString(36).substr(2,9), type: 'UART', signals: [uartCandidate], config: { baudRate: 9600 } });
     }
 
-    // 3) Detect Avalon-like bus: parent with clk + addr + read/write
-    parentMap.forEach((names, parent) => {
+    // 3) Detect Avalon-like bus
+    parentMap.forEach((names) => {
       const lower = new Set(names.map(n => leaf(n)));
       const hasCLK = Array.from(lower).some(n => n === 'clk' || n.includes('clk') || n.includes('clock'));
       const hasADDR = Array.from(lower).some(n => n.includes('addr') || n.includes('address'));
-      // For READ/WRITE detection avoid matching signals like readdatavalid
       const hasREAD = Array.from(lower).some(n => (n === 'read' || n === 'rd' || /(^|_|\.)read($|_|\.)/.test(n)) && !n.includes('data') && !n.includes('valid'));
       const hasWRITE = Array.from(lower).some(n => (n === 'write' || n === 'wr' || /(^|_|\.)write($|_|\.)/.test(n)) && !n.includes('data') && !n.includes('valid'));
-      if (hasCLK && (hasADDR && (hasREAD || hasWRITE))) {
+      if (hasCLK && hasADDR && (hasREAD || hasWRITE)) {
         const clk = names.find(n => leaf(n) === 'clk' || leaf(n).includes('clk') || leaf(n).includes('clock'));
         const addr = names.find(n => leaf(n).includes('addr') || leaf(n).includes('address'));
         const read = names.find(n => {
@@ -428,37 +383,32 @@ export default function App() {
           return (l === 'write' || l === 'wr' || /(^|_|\.)write($|_|\.)/.test(l)) && !l.includes('data') && !l.includes('valid');
         });
         const wrdata = names.find(n => leaf(n).includes('wrdata') || leaf(n).includes('writedata'));
-        // prefer rddata/readdata but avoid matching readdatavalid; prefer explicit rddata
         const rddataCandidates = names.filter(n => {
           const l = leaf(n);
           return (l.includes('rddata') || l.includes('readdata')) && !l.includes('valid') && !l.includes('vld');
         });
         const rddata = rddataCandidates.length > 0 ? rddataCandidates[0] : names.find(n => leaf(n).includes('rddata') || leaf(n).includes('readdata'));
         const wait = names.find(n => leaf(n).includes('wait') || leaf(n).includes('waitrequest'));
-        // prefer explicit read-valid signals (readdatavalid / rdvalid)
         const rdvalid = names.find(n => {
           const l = leaf(n);
-          return l === 'rdvalid' || l.includes('readdatavalid') || l.includes('readdatavalid') || (l.includes('valid') && l.includes('read'));
+          return l === 'rdvalid' || l.includes('readdatavalid') || (l.includes('valid') && l.includes('read'));
         });
         const byteEnable = names.find(n => leaf(n).includes('byteenable') || leaf(n).includes('byte_en') || leaf(n).includes('byteenable_n'));
         if (clk) {
-          // avoid using the same signal for both rddata and rdvalid
-          let finalRdData = rddata;
-          let finalRdValid = rdvalid;
-          if (finalRdData && finalRdValid && finalRdData === finalRdValid) {
-            finalRdValid = undefined;
-          }
-
-          // keep internal order for decoder usage: CLK, ADDR, READ, WRITE, WRDATA, RDDATA, WAIT, RDDATAVALID
-          detected.push({ id: Math.random().toString(36).substr(2,9), type: 'Avalon', signals: [clk, addr || '', read || '', write || '', wrdata || '', finalRdData || '', wait || '', finalRdValid || '', byteEnable || ''], config: {}, collapsed: true });
+          detected.push({ id: Math.random().toString(36).substr(2,9), type: 'Avalon', signals: [clk, addr || '', read || '', write || '', wrdata || '', rddata || '', wait || '', rdvalid || '', byteEnable || ''], config: {}, collapsed: true });
         }
       }
     });
 
+    // 4) Detect I2C: look for scl and sda signals
+    const scl = allNames.find(n => /(^|\.|_)(scl|i2c_scl)$/.test(n.toLowerCase()));
+    const sda = allNames.find(n => /(^|\.|_)(sda|i2c_sda)$/.test(n.toLowerCase()));
+    if (scl && sda) {
+      detected.push({ id: Math.random().toString(36).substr(2,9), type: 'I2C', signals: [scl, sda], config: {}, collapsed: false });
+    }
+
     if (detected.length > 0) {
       setProtocols(detected);
-
-      // Remove detected protocol signals from visibleSignals to avoid duplicate rows
       const detectedSignals = new Set<string>();
       detected.forEach(p => p.signals.forEach(s => { if (s) detectedSignals.add(s); }));
       setVisibleSignals(prev => prev.filter(s => !detectedSignals.has(s)));
@@ -466,22 +416,16 @@ export default function App() {
   };
 
   const updateProtocol = (id: string, updates: Partial<ProtocolConfig>) => {
-    setProtocols(protocols.map(p => p.id === id ? { ...p, ...updates } : p));
+    setProtocols(prev => prev.map(p => p.id === id ? { ...p, ...updates } : p));
   };
 
   const removeProtocol = (id: string) => {
-    setProtocols(protocols.filter(p => p.id !== id));
+    setProtocols(prev => prev.filter(p => p.id !== id));
   };
 
   const signalNames = useMemo(() => (
     vcdData ? Array.from(vcdData.signals.keys()) : []
   ), [vcdData]);
-
-  const filteredSignalNames = useMemo(() => {
-    const search = signalSearchTerm.toLowerCase();
-    if (!search) return signalNames;
-    return signalNames.filter(name => name.toLowerCase().includes(search));
-  }, [signalNames, signalSearchTerm]);
 
   const decodedProtocols = useMemo(() => protocols.map(p => {
     let decoded: DecodedEvent[] = [];
@@ -493,17 +437,14 @@ export default function App() {
         decoded = decodeUART(sig, p.config.baudRate || 9600, vcdData.timescale);
       }
     } else if (p.type === 'SPI' && p.signals[0]) {
-      // signals: [SCLK, MOSI, MISO, CS]
       const sclk = vcdData.signals.get(p.signals[0]);
       const mosi = p.signals[1] ? vcdData.signals.get(p.signals[1]) : undefined;
       const miso = p.signals[2] ? vcdData.signals.get(p.signals[2]) : undefined;
       const cs = p.signals[3] ? vcdData.signals.get(p.signals[3]) : undefined;
-      
       if (sclk) {
         decoded = decodeSPI(sclk, mosi, miso, cs, p.config.cpol || 0, p.config.cpha || 0);
       }
     } else if (p.type === 'Avalon' && p.signals[0]) {
-      // signals: [CLK, ADDR, READ, WRITE, WRDATA, RDDATA, WAIT, RDDATAVALID]
       const clk = vcdData.signals.get(p.signals[0]);
       const addr = p.signals[1] ? vcdData.signals.get(p.signals[1]) : undefined;
       const read = p.signals[2] ? vcdData.signals.get(p.signals[2]) : undefined;
@@ -516,16 +457,20 @@ export default function App() {
       if (clk) {
         decoded = decodeAvalon(clk, addr, read, write, wrdata, rddata, wait, rdvalid);
       }
+    } else if (p.type === 'I2C' && p.signals[0] && p.signals[1]) {
+      const scl = vcdData.signals.get(p.signals[0]);
+      const sda = vcdData.signals.get(p.signals[1]);
+      if (scl && sda) {
+        decoded = decodeI2C(scl, sda);
+      }
     }
     return { ...p, decoded };
   }), [protocols, vcdData]);
 
-  // Represent protocols as groups so they appear in the waveform grouping area
   const protocolGroups: SignalGroup[] = useMemo(() => decodedProtocols.map(p => ({
     id: `proto_${p.id}`,
     name: (() => {
       if (p.type === 'Avalon') {
-        // try to infer module name from first signal (drop last segment)
         const s = p.signals.find(s => !!s);
         if (s && s.includes('.')) {
           const parts = s.split('.');
@@ -545,7 +490,6 @@ export default function App() {
         if (found) { ordered.push(found); used.add(found); }
       };
 
-      // Desired UI order (exclude CLK): address, read, readdata, readdatavalid, write, writedata, waitrequest, byteenable
       findAndAdd(l => l.includes('addr') || l.includes('address'));
       findAndAdd(l => (l === 'read' || l === 'rd' || l.includes('read')) && !l.includes('data') && !l.includes('valid'));
       findAndAdd(l => l.includes('rddata') || l.includes('readdata'));
@@ -555,7 +499,6 @@ export default function App() {
       findAndAdd(l => l.includes('wait') || l.includes('waitrequest'));
       findAndAdd(l => l.includes('byteenable') || l.includes('byte_en'));
 
-      // Append any remaining signals (except clk) in original order
       sigs.forEach(s => { if (!used.has(s) && leaf(s) !== 'clk') { ordered.push(s); used.add(s); } });
       return ordered;
     })(),
@@ -573,7 +516,6 @@ export default function App() {
           )}
           style={{ width: sidebarCollapsed ? '50px' : `${sidebarWidth}px` }}
         >
-          {/* Sidebar Toggle Button */}
           <div className="flex-shrink-0 p-2 flex justify-end border-b border-[#333]">
             <button
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
@@ -584,324 +526,47 @@ export default function App() {
             </button>
           </div>
           
-          {/* Sidebar Content with Scrollbar */}
           {!sidebarCollapsed && (
-          <div className="sidebar-scroll-left flex-1 overflow-y-auto p-6 space-y-6">
-          {/* Visible Signals (moved to top) */}
-          {vcdData && (
-            <section className={cn("bg-[#141414] border border-[#333] rounded-lg p-4", !visibleSignalsCollapsed && "max-h-[400px] overflow-y-auto")}>
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-2 text-[#f27d26]">
-                  <button
-                    onClick={() => setVisibleSignalsCollapsed(prev => !prev)}
-                    className="p-0.5 hover:bg-[#222] rounded transition-colors"
-                    title={visibleSignalsCollapsed ? "Expand Visible Signals" : "Collapse Visible Signals"}
-                  >
-                    {visibleSignalsCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-                  </button>
-                  <Settings size={16} />
-                  <h2 className="text-xs font-bold uppercase tracking-widest font-mono">Visible Signals</h2>
-                </div>
-                <div className="flex gap-2">
-                  <button 
-                    onClick={() => setVisibleSignals(signalNames)}
-                    className="text-[10px] font-mono text-[#f27d26] hover:text-[#f27d26]/80 border border-[#f27d26]/30 px-1.5 rounded transition-colors"
-                  >
-                    ALL
-                  </button>
-                  <button 
-                    onClick={() => setVisibleSignals([])}
-                    className="text-[10px] font-mono text-gray-500 hover:text-gray-400 border border-gray-500/30 px-1.5 rounded transition-colors"
-                  >
-                    NONE
-                  </button>
-                </div>
-              </div>
-              {!visibleSignalsCollapsed && (
-                <>
-                  <input
-                    type="text"
-                    placeholder="Search signals..."
-                    value={signalSearchTerm}
-                    onChange={(e) => setSignalSearchTerm(e.target.value)}
-                    className="w-full bg-[#0a0a0a] border border-[#333] rounded px-2 py-1.5 text-xs font-mono text-gray-400 placeholder-gray-600 mb-3 focus:outline-none focus:border-[#f27d26] transition-colors"
-                  />
-                  <div className="space-y-1">
-                    {filteredSignalNames.map((name: string) => (
-                      <label key={name} className="flex items-center gap-2 p-1 hover:bg-[#222] rounded cursor-pointer group">
-                        <input 
-                          type="checkbox"
-                          checked={visibleSignals.includes(name)}
-                          onChange={(e) => {
-                            if (e.target.checked) setVisibleSignals([...visibleSignals, name]);
-                            else setVisibleSignals(visibleSignals.filter(s => s !== name));
-                          }}
-                          className="accent-[#f27d26]"
-                        />
-                        <div className="flex flex-col">
-                          <span className="text-xs font-mono text-gray-400 group-hover:text-white transition-colors">{name}</span>
-                          {vcdData.signals.get(name) && (name.toLowerCase().includes('clk') || name.toLowerCase().includes('clock')) && (
-                            <span className="text-[9px] text-emerald-500 font-mono opacity-60">
-                              {calculateSignalFrequency(vcdData.signals.get(name)!, vcdData.timescale)}
-                            </span>
-                          )}
-                        </div>
-                      </label>
-                    ))}
-                  </div>
-                </>
+            <div className="sidebar-scroll-left flex-1 overflow-y-auto p-6 space-y-6">
+              {vcdData && (
+                <VisibleSignalsSection
+                  vcdData={vcdData}
+                  signalNames={signalNames}
+                  visibleSignals={visibleSignals}
+                  onVisibleSignalsChange={setVisibleSignals}
+                  collapsed={visibleSignalsCollapsed}
+                  onToggleCollapse={() => setVisibleSignalsCollapsed(prev => !prev)}
+                />
               )}
-            </section>
-          )}
 
-          {/* Protocols */}
-          <section className="bg-[#141414] border border-[#333] rounded-lg p-4">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2 text-[#f27d26]">
-                <button
-                  onClick={() => setProtocolsCollapsed(prev => !prev)}
-                  className="p-0.5 hover:bg-[#222] rounded transition-colors"
-                  title={protocolsCollapsed ? "Expand Protocols" : "Collapse Protocols"}
-                >
-                  {protocolsCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-                </button>
-                <Cpu size={16} />
-                <h2 className="text-xs font-bold uppercase tracking-widest font-mono">Protocols</h2>
-              </div>
-              <div className="flex gap-2">
-                <button 
-                  onClick={() => autoDetectProtocols()}
-                  title="Auto Detect Protocols"
-                  className="p-1 hover:bg-[#222] rounded text-emerald-500 hover:text-emerald-400 transition-colors text-[10px] font-mono border border-emerald-500/30 px-2"
-                >
-                  AUTO
-                </button>
-                <button 
-                  onClick={addProtocol}
-                  className="p-1 hover:bg-[#222] rounded text-gray-400 hover:text-white transition-colors"
-                >
-                  <Plus size={16} />
-                </button>
-              </div>
+              <ProtocolsSection
+                vcdData={vcdData}
+                signalNames={signalNames}
+                protocols={protocols}
+                decodedProtocols={decodedProtocols}
+                onAddProtocol={addProtocol}
+                onUpdateProtocol={updateProtocol}
+                onRemoveProtocol={removeProtocol}
+                onAutoDetect={() => autoDetectProtocols()}
+                collapsed={protocolsCollapsed}
+                onToggleCollapse={() => setProtocolsCollapsed(prev => !prev)}
+              />
+
+              <SignalGroupsSection
+                vcdData={vcdData}
+                signalNames={signalNames}
+                groups={groups}
+                onAddGroup={addGroup}
+                onUpdateGroup={updateGroup}
+                onRemoveGroup={removeGroup}
+                onAddSignalToGroup={addSignalToGroup}
+                onRemoveSignalFromGroup={removeSignalFromGroup}
+                onAutoGroup={autoGroupSignals}
+                onClearAllSignals={handleClearAllSignals}
+                collapsed={signalGroupsCollapsed}
+                onToggleCollapse={() => setSignalGroupsCollapsed(prev => !prev)}
+              />
             </div>
-
-            {!protocolsCollapsed && (
-              <div className="space-y-4">
-                {protocols.length === 0 && (
-                  <p className="text-xs text-gray-600 italic font-mono text-center py-4">No protocols defined</p>
-                )}
-                {protocols.map((protocol) => (
-                  <div key={protocol.id} className="p-3 bg-[#0a0a0a] border border-[#333] rounded space-y-3">
-                    <div className="flex justify-between items-center">
-                      <select 
-                        value={protocol.type}
-                        onChange={(e) => updateProtocol(protocol.id, { type: e.target.value as any })}
-                        className="bg-transparent text-xs font-bold font-mono outline-none"
-                      >
-                        <option value="UART">UART</option>
-                        <option value="SPI">SPI</option>
-                        <option value="Avalon">Avalon-MM</option>
-                      </select>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] bg-emerald-500/10 text-emerald-500 px-1.5 py-0.5 rounded border border-emerald-500/20">
-                          {decodedProtocols.find(dp => dp.id === protocol.id)?.decoded.length || 0} events
-                        </span>
-                        <button onClick={() => removeProtocol(protocol.id)} className="text-gray-600 hover:text-red-500">
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    </div>
-
-                  <div className="space-y-2">
-                    <label className="block text-[10px] text-gray-500 uppercase font-mono">Signal Source</label>
-                    <select 
-                      value={protocol.signals[0] || ''}
-                      onChange={(e) => updateProtocol(protocol.id, { signals: [e.target.value] })}
-                      className="w-full bg-[#141414] border border-[#333] rounded p-1 text-xs font-mono"
-                    >
-                      <option value="">Select Signal</option>
-                      {vcdData && signalNames.map(name => (
-                        <option key={name} value={name}>{name}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {protocol.type === 'UART' && (
-                    <div className="space-y-2">
-                      <label className="block text-[10px] text-gray-500 uppercase font-mono">Baud Rate</label>
-                      <input 
-                        type="number"
-                        value={protocol.config.baudRate}
-                        onChange={(e) => updateProtocol(protocol.id, { config: { ...protocol.config, baudRate: parseInt(e.target.value) } })}
-                        className="w-full bg-[#141414] border border-[#333] rounded p-1 text-xs font-mono"
-                      />
-                    </div>
-                  )}
-
-                  {protocol.type === 'SPI' && (
-                    <div className="space-y-3">
-                      {['SCLK', 'MOSI', 'MISO', 'CS'].map((label, idx) => (
-                        <div key={label} className="space-y-1">
-                          <label className="block text-[10px] text-gray-500 uppercase font-mono">{label}</label>
-                          <select 
-                            value={protocol.signals[idx] || ''}
-                            onChange={(e) => {
-                              const newSignals = [...protocol.signals];
-                              newSignals[idx] = e.target.value;
-                              updateProtocol(protocol.id, { signals: newSignals });
-                            }}
-                            className="w-full bg-[#141414] border border-[#333] rounded p-1 text-xs font-mono"
-                          >
-                            <option value="">None</option>
-                            {vcdData && signalNames.map(name => (
-                              <option key={name} value={name}>{name}</option>
-                            ))}
-                          </select>
-                        </div>
-                      ))}
-                      <div className="flex gap-2">
-                        <div className="flex-1 space-y-1">
-                          <label className="block text-[10px] text-gray-500 uppercase font-mono">CPOL</label>
-                          <select 
-                            value={protocol.config.cpol}
-                            onChange={(e) => updateProtocol(protocol.id, { config: { ...protocol.config, cpol: parseInt(e.target.value) } })}
-                            className="w-full bg-[#141414] border border-[#333] rounded p-1 text-xs font-mono"
-                          >
-                            <option value="0">0</option>
-                            <option value="1">1</option>
-                          </select>
-                        </div>
-                        <div className="flex-1 space-y-1">
-                          <label className="block text-[10px] text-gray-500 uppercase font-mono">CPHA</label>
-                          <select 
-                            value={protocol.config.cpha}
-                            onChange={(e) => updateProtocol(protocol.id, { config: { ...protocol.config, cpha: parseInt(e.target.value) } })}
-                            className="w-full bg-[#141414] border border-[#333] rounded p-1 text-xs font-mono"
-                          >
-                            <option value="0">0</option>
-                            <option value="1">1</option>
-                          </select>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {protocol.type === 'Avalon' && (
-                    <div className="space-y-3">
-                      {['CLK', 'ADDR', 'READ', 'WRITE', 'WRDATA', 'RDDATA', 'WAIT', 'RDVALID'].map((label, idx) => (
-                        <div key={label} className="space-y-1">
-                          <label className="block text-[10px] text-gray-500 uppercase font-mono">{label}</label>
-                          <select 
-                            value={protocol.signals[idx] || ''}
-                            onChange={(e) => {
-                              const newSignals = [...protocol.signals];
-                              newSignals[idx] = e.target.value;
-                              updateProtocol(protocol.id, { signals: newSignals });
-                            }}
-                            className="w-full bg-[#141414] border border-[#333] rounded p-1 text-xs font-mono"
-                          >
-                            <option value="">None</option>
-                            {vcdData && signalNames.map(name => (
-                              <option key={name} value={name}>{name}</option>
-                            ))}
-                          </select>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-
-          {/* Signal Groups */}
-          <section className="bg-[#141414] border border-[#333] rounded-lg p-4">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2 text-emerald-500">
-                <button
-                  onClick={() => setSignalGroupsCollapsed(prev => !prev)}
-                  className="p-0.5 hover:bg-[#222] rounded transition-colors"
-                  title={signalGroupsCollapsed ? "Expand Signal Groups" : "Collapse Signal Groups"}
-                >
-                  {signalGroupsCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-                </button>
-                <Settings size={16} />
-                <h2 className="text-xs font-bold uppercase tracking-widest font-mono">Signal Groups</h2>
-              </div>
-              <div className="flex gap-2">
-                <button 
-                  onClick={autoGroupSignals}
-                  title="Auto Group by Suffix"
-                  className="p-1 hover:bg-[#222] rounded text-emerald-500 hover:text-emerald-400 transition-colors text-[10px] font-mono border border-emerald-500/30 px-2"
-                >
-                  AUTO
-                </button>
-                <button 
-                  onClick={addGroup}
-                  className="p-1 hover:bg-[#222] rounded text-gray-400 hover:text-white transition-colors"
-                >
-                  <Plus size={16} />
-                </button>
-                <button 
-                  onClick={handleClearAllSignals}
-                  title="Clear all signals and groups"
-                  className="p-1 hover:bg-[#222] rounded text-gray-400 hover:text-red-400 transition-colors"
-                >
-                  <Trash2 size={16} />
-                </button>
-              </div>
-            </div>
-
-            {!signalGroupsCollapsed && (
-              <div className="space-y-4">
-              {groups.length === 0 && (
-                <p className="text-xs text-gray-600 italic font-mono text-center py-4">No groups defined</p>
-              )}
-              {groups.map((group) => (
-                <div key={group.id} className="p-3 bg-[#0a0a0a] border border-[#333] rounded space-y-3">
-                  <div className="flex justify-between items-center">
-                    <input 
-                      value={group.name}
-                      onChange={(e) => updateGroup(group.id, { name: e.target.value })}
-                      className="bg-transparent text-xs font-bold font-mono outline-none border-b border-transparent focus:border-[#f27d26] w-full mr-2"
-                    />
-                    <button onClick={() => removeGroup(group.id)} className="text-gray-600 hover:text-red-500">
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-
-                  <div className="space-y-2">
-                    <div className="flex flex-wrap gap-1">
-                      {group.signalNames.map(sig => (
-                        <span key={sig} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-[#141414] border border-[#333] rounded text-[10px] font-mono">
-                          {sig}
-                          <button onClick={() => removeSignalFromGroup(group.id, sig)} className="hover:text-red-500">×</button>
-                        </span>
-                      ))}
-                    </div>
-                    <select 
-                      onChange={(e) => {
-                        if (e.target.value) addSignalToGroup(group.id, e.target.value);
-                        e.target.value = '';
-                      }}
-                      className="w-full bg-[#141414] border border-[#333] rounded p-1 text-xs font-mono"
-                    >
-                      <option value="">Add Signal...</option>
-                      {vcdData && signalNames.map(name => (
-                        <option key={name} value={name}>{name}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              ))}
-              </div>
-            )}
-          </section>
-
-          {/* Signal Visibility */}
-          {/* moved Visible Signals to top of sidebar */}
-          </div>
           )}
 
           {!sidebarCollapsed && (
@@ -949,74 +614,14 @@ export default function App() {
             </div>
           ) : (
             <div className={cn("flex-1 min-w-0 min-h-0 flex flex-col", sidebarCollapsed ? "space-y-2" : "space-y-6")}>
-              {/* Measurement Bar - doesn't grow */}
               <div className="flex-shrink-0">
-                <AnimatePresence>
-                  {selectedSignalName && vcdData.signals.get(selectedSignalName) && (
-                    <motion.div 
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      className="bg-[#1a1a1a] border border-[#f27d26]/30 rounded p-2 overflow-hidden"
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex min-w-0 items-center gap-2">
-                          <Activity size={13} className="flex-shrink-0 text-[#f27d26]" />
-                          <h3 className="truncate text-[10px] font-bold uppercase font-mono text-white">
-                            Measurements: <span className="text-[#f27d26]">{selectedSignalName}</span>
-                          </h3>
-                        </div>
-                        <button 
-                          onClick={() => setSelectedSignalName(null)}
-                          className="ml-2 text-xs text-gray-500 hover:text-white transition-colors"
-                        >
-                          ×
-                        </button>
-                      </div>
-                      
-                      {(() => {
-                        const signal = vcdData.signals.get(selectedSignalName)!;
-                        const measurements = calculateSignalMeasurements(signal, vcdData.timescale);
-                        
-                        if (measurements) {
-                          return (
-                            <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-                              {[
-                                { label: 'Frequency', value: measurements.frequency },
-                                { label: 'Period', value: measurements.avgPeriod },
-                                { label: 'Pos Pulse', value: measurements.avgPosPulse },
-                                { label: 'Neg Pulse', value: measurements.avgNegPulse },
-                                { label: 'Duty Cycle', value: measurements.dutyCycle },
-                              ].map(stat => (
-                                <div key={stat.label} className="bg-[#0a0a0a] px-2 py-1 rounded border border-[#333]">
-                                  <div className="text-[8px] leading-tight text-gray-500 uppercase font-mono">{stat.label}</div>
-                                  <div className="text-xs leading-tight font-mono text-emerald-500 font-bold">{stat.value}</div>
-                                </div>
-                              ))}
-                            </div>
-                          );
-                        } else if (signal.size > 1) {
-                          return (
-                            <div className="text-xs text-gray-500 font-mono italic flex items-center gap-2">
-                              <Settings size={14} />
-                              Timing measurements are currently only available for single-bit signals (clocks, enables, etc).
-                            </div>
-                          );
-                        } else {
-                          return (
-                            <div className="text-xs text-gray-500 font-mono italic flex items-center gap-2">
-                              <Activity size={14} />
-                              Not enough transitions detected to calculate timing measurements for this signal.
-                            </div>
-                          );
-                        }
-                      })()}
-                    </motion.div>
-                  )}
-                </AnimatePresence>
+                <MeasurementBar
+                  selectedSignalName={selectedSignalName}
+                  vcdData={vcdData}
+                  onClose={() => setSelectedSignalName(null)}
+                />
               </div>
 
-              {/* Waveform Viewer - grows to fill available space */}
               <div className="flex-1 min-w-0 min-h-0 overflow-hidden">
                 <WaveformViewer 
                   data={vcdData} 
@@ -1027,7 +632,7 @@ export default function App() {
                   selectedEvent={selectedEvent}
                   selectedSignalName={selectedSignalName}
                   onSelectEvent={(protocolId, index) => setSelectedEvent({ protocolId, index })}
-                  onSelectSignal={(name) => { setSelectedSignalName(name); }}
+                  onSelectSignal={(name) => setSelectedSignalName(name)}
                   onReorderSignal={handleReorderSignal}
                   onToggleGroup={toggleGroupCollapse}
                   selectedGroupId={selectedGroupId}
@@ -1046,10 +651,15 @@ export default function App() {
       <footer className="fixed bottom-0 left-0 right-0 bg-[#0a0a0a] border-t border-[#141414] px-6 py-2 flex justify-between items-center text-[10px] font-mono text-gray-600 uppercase tracking-widest">
         <div className="flex gap-4">
           <span>Status: {vcdData ? 'READY' : 'IDLE'}</span>
-          {vcdData && <span>Memory: {(JSON.stringify(vcdData).length / 1024 / 1024).toFixed(2)} MB</span>}
+          {vcdData && (
+            <>
+              {fileSizeBytes !== null && <span>Size: {(fileSizeBytes / 1024 / 1024).toFixed(2)} MB</span>}
+              <span>Signals: {vcdData.signals.size}</span>
+            </>
+          )}
         </div>
         <div>
-          v1.0.6
+          v1.1.0
         </div>
       </footer>
     </div>

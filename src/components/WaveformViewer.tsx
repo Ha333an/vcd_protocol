@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
-import { Maximize2, ZoomIn, ZoomOut } from 'lucide-react';
-import { VCDData, VCDSignal, DecodedEvent, binToHex, calculateSignalFrequency, convertTicksToUnit, getSignalValueAt } from '../utils/vcd';
+import { Maximize2, ZoomIn, ZoomOut, Download } from 'lucide-react';
+import { VCDData, VCDSignal, DecodedEvent, binToHex, formatBusValue, calculateSignalFrequency, convertTicksToUnit, getSignalValueAt } from '../utils/vcd';
+import { RadixType } from '../types';
 
 const PROTOCOL_READ_COLOR = '#10b981';
 const PROTOCOL_WRITE_COLOR = '#f27d26';
@@ -73,6 +74,29 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
   const zoomInRef = useRef<() => void>(() => {});
   const zoomOutRef = useRef<() => void>(() => {});
   const fitToScreenRef = useRef<() => void>(() => {});
+  const [radix, setRadix] = useState<RadixType>('hex');
+
+  const totalDecodedCount = protocolDecoders?.reduce((sum, p) => sum + (p.decoded?.length || 0), 0) || 0;
+
+  const exportDecodedTransactions = () => {
+    if (!protocolDecoders || totalDecodedCount === 0) return;
+    const rows = ['Protocol,Label,Data,Start Time (ticks),End Time (ticks),Duration (ticks)'];
+    protocolDecoders.forEach(p => {
+      p.decoded?.forEach(e => {
+        const cleanLabel = (e.label || '').replace(/"/g, '""');
+        const cleanData = (e.data || '').replace(/"/g, '""');
+        const duration = e.endTime - e.startTime;
+        rows.push(`"${p.type}","${cleanLabel}","${cleanData}",${e.startTime},${e.endTime},${duration}`);
+      });
+    });
+    const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `vcd_decoded_protocols_${Date.now()}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
 
   useEffect(() => {
     const container = containerRef.current;
@@ -558,7 +582,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
             if (rectWidth < 0.5) continue;
 
             const val = getDisplaySignalValueAt(signal, tStart);
-            const hex = binToHex(val);
+            const formatted = formatBusValue(val, radix);
 
             const busG = waveG.append('g');
 
@@ -580,7 +604,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
                 .attr('fill', isSelected ? '#f27d26' : color)
                 .style('font-size', '10px')
                 .style('font-family', 'var(--font-mono)')
-                .text(`0x${hex}`);
+                .text(formatted);
             }
           }
           return;
@@ -728,7 +752,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
             }
           });
 
-          const hex = binToHex(binStr);
+          const formatted = formatBusValue(binStr, radix);
 
           const busG = waveG.append('g');
           
@@ -751,7 +775,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
               .attr('fill', '#00ff00')
               .style('font-size', '10px')
               .style('font-family', 'var(--font-mono)')
-              .text(`0x${hex}`);
+              .text(formatted);
           }
         }
       };
@@ -1203,7 +1227,7 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
       horizontalScrollEl?.removeEventListener('scroll', handleHorizontalScroll);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [data, visibleSignals, displayUnit, protocolDecoders, selectedEvent, selectedSignalName, groups, onToggleGroup, onSelectEvent, onSelectSignal, movedSignalName, onReorderSignal, containerWidth]);
+  }, [data, visibleSignals, displayUnit, radix, protocolDecoders, selectedEvent, selectedSignalName, groups, onToggleGroup, onSelectEvent, onSelectSignal, movedSignalName, onReorderSignal, containerWidth]);
 
   return (
     <div ref={rootRef} className="relative h-full min-h-0 w-full overflow-hidden bg-[#141414] rounded-lg border border-[#333] p-4 flex flex-col gap-4">
@@ -1252,6 +1276,20 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
                 : '---'}
             </span>
           </div>
+          <div className="flex items-center gap-2">
+            <label className="text-[10px] text-gray-400">Radix</label>
+            <select
+              value={radix}
+              onChange={e => setRadix(e.target.value as RadixType)}
+              className="bg-[#0b1220] border border-[#333] rounded p-1 text-xs font-mono text-white outline-none"
+            >
+              <option value="hex">HEX</option>
+              <option value="dec">DEC (U)</option>
+              <option value="signed">DEC (S)</option>
+              <option value="bin">BIN</option>
+              <option value="ascii">ASCII</option>
+            </select>
+          </div>
           {onChangeDisplayUnit && (
             <div className="flex items-center gap-2">
               <label className="text-[10px] text-gray-400">Unit</label>
@@ -1263,6 +1301,16 @@ export const WaveformViewer: React.FC<WaveformProps> = ({
                 <option value="ps">ps</option>
               </select>
             </div>
+          )}
+          {totalDecodedCount > 0 && (
+            <button
+              onClick={exportDecodedTransactions}
+              className="px-2 py-1 bg-[#0b1220] border border-emerald-500/40 text-xs rounded text-emerald-400 hover:bg-emerald-500/10 flex items-center gap-1 transition-colors"
+              title={`Export ${totalDecodedCount} decoded transactions to CSV`}
+            >
+              <Download size={13} />
+              <span>CSV ({totalDecodedCount})</span>
+            </button>
           )}
           <div>
             <button
